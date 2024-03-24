@@ -103,6 +103,7 @@ const (
 	SecurityBpfProg
 	ProcessExecuteFailed
 	SecurityPathNotify
+	CheckSyscallSource
 	HiddenKernelModuleSeeker
 	ModuleLoad
 	ModuleFree
@@ -12952,6 +12953,28 @@ var CoreEvents = map[ID]Definition{
 			{Type: "dev_t", Name: "dev"},
 			{Type: "u64", Name: "mask"},
 			{Type: "unsigned int", Name: "obj_type"},
+		},
+	},
+	CheckSyscallSource: {
+		id:      CheckSyscallSource,
+		id32Bit: Sys32Undefined,
+		name:    "check_syscall_source",
+		dependencies: Dependencies{
+			probes: []Probe{
+				{handle: probes.SyscallEnter__Internal, required: true},
+			},
+			tailCalls: []TailCall{
+				{"sys_enter_init_tail", "sys_enter_init", []uint32{uint32(Execve)}},
+				{"check_syscall_source_tail", "check_syscall_source", []uint32{uint32(Execve)}},
+			},
+		},
+		sets: []string{},
+		params: []trace.ArgMeta{
+			{Type: "int", Name: "syscall"},
+			{Type: "void*", Name: "pc"},
+			{Type: "bool", Name: "is_stack"},
+			{Type: "bool", Name: "is_heap"},
+			{Type: "bool", Name: "is_anon_vma"},
 		},
 	},
 	//
