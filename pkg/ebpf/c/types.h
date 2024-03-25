@@ -546,4 +546,12 @@ enum file_modification_op
 typedef __u64 stack_trace_t[MAX_STACK_DEPTH];
 typedef u32 file_type_t;
 
+// key for the syscall source map
+typedef struct {
+    uint syscall;
+    u32 tgid;
+    u64 tgid_start_time;
+    u64 vma_addr;
+} syscall_source_key_t;
+
 #endif
