@@ -548,7 +548,7 @@ typedef u32 file_type_t;
 
 // key for the syscall source map
 typedef struct {
-    uint syscall;
+    u32 syscall;
     u32 tgid;
     u64 tgid_start_time;
     u64 vma_addr;
