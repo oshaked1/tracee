@@ -118,7 +118,8 @@ func (af *ArgFilter) Parse(filterName string, operatorAndValues string, eventsNa
 	valueHandler := func(val string) (string, error) {
 		switch id {
 		case events.SysEnter,
-			events.SysExit:
+			events.SysExit,
+			events.CheckSyscallSource:
 			if argName == "syscall" { // handle either syscall name or syscall id
 				_, err := strconv.Atoi(val)
 				if err != nil {
