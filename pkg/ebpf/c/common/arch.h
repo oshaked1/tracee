@@ -7,6 +7,13 @@
 
 #include <common/common.h>
 
+// STRUCTS
+
+struct task_regs {
+    bool is_compat;
+    struct pt_regs *regs;
+};
+
 // PROTOTYPES
 
 statfunc bool is_x86_compat(struct task_struct *);
@@ -14,8 +21,28 @@ statfunc bool is_arm64_compat(struct task_struct *);
 statfunc bool is_compat(struct task_struct *);
 statfunc int get_syscall_id_from_regs(struct pt_regs *);
 statfunc struct pt_regs *get_current_task_pt_regs(void);
+statfunc void get_current_task_regs(struct task_regs *task_regs);
 statfunc bool has_syscall_fd_arg(uint);
 statfunc uint get_syscall_fd_num_from_arg(uint syscall_id, args_t *);
+
+// INTERNAL
+
+statfunc struct pt_regs *__get_current_task_pt_regs(struct task_struct **task);
+
+// MACROS
+
+#if defined(bpf_target_x86)
+#define __GET_REG(pt_regs, compat, x86_64_reg, x86_reg, arm64_reg, arm_reg) (compat ? pt_regs->x86_reg : pt_regs->x86_64_reg)
+#elif defined(bpf_target_arm64)
+#define __GET_REG(pt_regs, compat, x86_64_reg, x86_reg, arm64_reg, arm_reg) (compat ? pt_regs->arm_reg : pt_regs->arm64_reg)
+#endif
+
+#define TASK_REGS_SYSCALL_ARG1(task_regs) __GET_REG(task_regs.regs, task_regs.is_compat, di, bx, orig_x0, uregs[0])
+#define TASK_REGS_SYSCALL_ARG2(task_regs) __GET_REG(task_regs.regs, task_regs.is_compat, si, cx, regs[1], uregs[1])
+#define TASK_REGS_SYSCALL_ARG3(task_regs) __GET_REG(task_regs.regs, task_regs.is_compat, dx, dx, regs[2], uregs[2])
+#define TASK_REGS_SYSCALL_ARG4(task_regs) __GET_REG(task_regs.regs, task_regs.is_compat, r10, si, regs[3], uregs[3])
+#define TASK_REGS_SYSCALL_ARG5(task_regs) __GET_REG(task_regs.regs, task_regs.is_compat, r8, di, regs[4], uregs[4])
+#define TASK_REGS_SYSCALL_ARG6(task_regs) __GET_REG(task_regs.regs, task_regs.is_compat, r9, bp, regs[5], uregs[5])
 
 // FUNCTIONS
 
@@ -58,27 +85,43 @@ statfunc int get_syscall_id_from_regs(struct pt_regs *regs)
     return id;
 }
 
+/**
+ * WARNING: for internal use
+ */
+statfunc struct pt_regs *__get_current_task_pt_regs(struct task_struct **task)
+{
+    // Use the bpf_task_pt_regs helper if possible
+    if (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_get_current_task_btf) &&
+        bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_task_pt_regs)) {
+        *task = bpf_get_current_task_btf();
+        return (struct pt_regs *) bpf_task_pt_regs(*task);
+    }
+
+    // Helper not available, extract registers manually
+    *task = (struct task_struct *) bpf_get_current_task();
+
+// THREAD_SIZE here is statistically defined and assumed to work for 4k page sizes.
+#if defined(bpf_target_x86)
+    void *__ptr = BPF_CORE_READ(*task, stack) + THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING;
+    return ((struct pt_regs *) __ptr) - 1;
+#elif defined(bpf_target_arm64)
+    return ((struct pt_regs *) (THREAD_SIZE + BPF_CORE_READ(*task, stack)) - 1);
+#endif
+}
+
 statfunc struct pt_regs *get_current_task_pt_regs(void)
 {
     struct task_struct *task;
 
-    // Use the bpf_task_pt_regs helper if possible
-    if (bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_get_current_task_btf) &&
-        bpf_core_enum_value_exists(enum bpf_func_id, BPF_FUNC_task_pt_regs)) {
-        task = bpf_get_current_task_btf();
-        return (struct pt_regs *) bpf_task_pt_regs(task);
-    }
+    return __get_current_task_pt_regs(&task);
+}
 
-    // Helper not available, extract registers manually
-    task = (struct task_struct *) bpf_get_current_task();
+statfunc void get_current_task_regs(struct task_regs *task_regs)
+{
+    struct task_struct *task;
 
-// THREAD_SIZE here is statistically defined and assumed to work for 4k page sizes.
-#if defined(bpf_target_x86)
-    void *__ptr = BPF_CORE_READ(task, stack) + THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING;
-    return ((struct pt_regs *) __ptr) - 1;
-#elif defined(bpf_target_arm64)
-    return ((struct pt_regs *) (THREAD_SIZE + BPF_CORE_READ(task, stack)) - 1);
-#endif
+    task_regs->regs = __get_current_task_pt_regs(&task);
+    task_regs->is_compat = is_compat(task);
 }
 
 #define UNDEFINED_SYSCALL 1000
