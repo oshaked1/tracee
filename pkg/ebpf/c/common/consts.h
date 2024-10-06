@@ -14,10 +14,10 @@
 #define NET_SEQ_OPS_TYPES   6         // print_net_seq_ops: argument size - TODO: replace with uprobe argument
 #define MAX_KSYM_NAME_SIZE  64
 #define UPROBE_MAGIC_NUMBER 20220829
-#define ARGS_BUF_SIZE       32000
+#define ARGS_BUF_SIZE       28000 // event_data_t must not exceed 32KB because it's the element of event_data_map, a percpu array which has an element size limit of 32KB
 #define SEND_META_SIZE      28
 
-#define MAX_SYS_CALL_TABLE_SIZE 500
+#define MAX_SYS_CALL_TABLE_SIZE 460 // TODO: this was 500 before but uprobe_syscall_table_check became too complex for the verifier. That program should be split using tail calls.
 #define MAX_MEM_DUMP_SIZE   127
 
 

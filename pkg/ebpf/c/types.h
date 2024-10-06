@@ -6,6 +6,7 @@
 
 #include <linux/limits.h>
 #include <common/consts.h>
+#include <stack_unwind/types.h>
 
 typedef struct task_context {
     u64 start_time;               // task's start time
@@ -32,7 +33,8 @@ typedef struct event_context {
     u32 eventid;
     s32 syscall; // syscall that triggered the event
     s64 retval;
-    u32 stack_id;
+    u16 has_stack_trace;
+    u16 stack_unwind_error; // enum ErrorCode TODO: move this to StackTrace
     u16 processor_id; // ID of the processor that processed the event
     u16 policies_version;
     u64 matched_policies;
@@ -134,6 +136,7 @@ enum event_id_e
     SECURITY_TASK_SETRLIMIT,
     SECURITY_SETTIME64,
     CHMOD_COMMON,
+    STACK_TRACE, // Stack trace pseudo-event
     MAX_EVENT_ID,
     NO_EVENT_SUBMIT,
 
@@ -405,16 +408,27 @@ typedef struct syscall_table_entry {
     u64 address;
 } syscall_table_entry_t;
 
+typedef struct args_metadata {
+    u32 argnum:8;
+    u32 offset:24;
+} args_metadata_t;
+
+_Static_assert(sizeof(args_metadata_t) == 4, "bitfield not working as expected");
+
 typedef struct args_buffer {
-    u8 argnum;
+    args_metadata_t metadata; // must come before args, as any unused buffer space will be used by a potential stack trace
     char args[ARGS_BUF_SIZE];
-    u16 offset;
     u16 args_offset[MAX_ARGS];
 } args_buffer_t;
 
 typedef struct event_data {
     event_context_t context;
-    args_buffer_t args_buf;
+    union {
+        args_buffer_t args_buf;
+        // When a stack trace is generated, a StackTrace instance is appended to the actual end of the argument buffer.
+        // Accessing the StackTrace requires knowledge of where the argument buffer ends (using the offset field).
+        char dynamic_data[sizeof(args_buffer_t) + sizeof(StackTrace)];
+    };
     struct task_struct *task;
     event_config_t config;
     policies_config_t policies_config;
@@ -432,8 +446,8 @@ typedef struct controlplane_signal {
     args_buffer_t args_buf;
 } controlplane_signal_t;
 
-#define MAX_EVENT_SIZE  sizeof(event_context_t) + sizeof(u8) + ARGS_BUF_SIZE
-#define MAX_SIGNAL_SIZE sizeof(u32) + sizeof(u8) + ARGS_BUF_SIZE
+#define MAX_EVENT_SIZE  sizeof(event_context_t) + sizeof(args_buffer_t) + sizeof(StackTrace)
+#define MAX_SIGNAL_SIZE sizeof(u32) + sizeof(args_buffer_t)
 
 #define BPF_MAX_LOG_FILE_LEN 72
 
@@ -465,6 +479,10 @@ enum bpf_log_id
 
     // find vma not supported
     BPF_LOG_FIND_VMA_UNSUPPORTED,
+
+    // stack unwind functions
+    BPF_LOG_ID_STACK_UNWIND_INVALID_REQUEST,
+    BPF_LOG_ID_STACK_UNWIND_LOST_EVENT,
 };
 
 typedef struct bpf_log {
@@ -500,6 +518,7 @@ typedef struct program_data {
     event_data_t *event;
     u32 scratch_idx;
     void *ctx;
+    enum bpf_prog_type prog_type;
 } program_data_t;
 
 // For a good summary about capabilities, see https://lwn.net/Articles/636533/
@@ -598,9 +617,9 @@ enum file_modification_op
     FILE_MODIFICATION_DONE,
 };
 
-#define MAX_STACK_DEPTH 20 // max depth of each stack trace to track
+/*#define MAX_STACK_DEPTH 20 // max depth of each stack trace to track
 
-typedef __u64 stack_trace_t[MAX_STACK_DEPTH];
+typedef __u64 stack_trace_t[MAX_STACK_DEPTH];*/
 typedef u32 file_type_t;
 
 struct sys_exit_tracepoint_args {

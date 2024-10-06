@@ -104,6 +104,8 @@ func (p *TraceProbe) attach(module *bpf.Module, args ...interface{}) error {
 		return errfmt.WrapError(err)
 	}
 
+	//logger.Infow("attaching trace probe", "name", p.programName, "type", p.probeType.String())
+
 	// KProbe and KretProbe
 
 	switch p.probeType {
@@ -181,6 +183,7 @@ func (p *TraceProbe) attach(module *bpf.Module, args ...interface{}) error {
 		if err != nil {
 			goto rollback
 		}
+		//logger.Infow("probe symbols", "probe", p.programName, "syms", syms)
 		switch len(syms) {
 		case 0:
 			err = errfmt.Errorf("failed to get symbol address: %s (%v)", p.eventName, err)
@@ -204,10 +207,12 @@ func (p *TraceProbe) attach(module *bpf.Module, args ...interface{}) error {
 				attachFunc = prog.AttachKretprobeOnOffset
 			}
 			for _, sym := range syms {
+				//logger.Infow("attaching", "probe", p.programName, "sym", sym)
 				link, err := attachFunc(sym.Address)
 				if err != nil {
 					goto rollback
 				}
+				//logger.Infow("finished attaching", "probe", p.programName, "sym", sym)
 				p.bpfLink = append(p.bpfLink, link)
 			}
 		}

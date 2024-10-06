@@ -2,7 +2,12 @@
 // between code eBPF running in the Kernel and the Tracee-eBPF user-space application.
 package bufferdecoder
 
-import "github.com/aquasecurity/tracee/pkg/events"
+import (
+	"github.com/aquasecurity/tracee/pkg/events"
+	"github.com/aquasecurity/tracee/types/trace"
+	"github.com/open-telemetry/opentelemetry-ebpf-profiler/host"
+	"github.com/open-telemetry/opentelemetry-ebpf-profiler/libpf"
+)
 
 // BinType is an enum that specifies the type of binary data sent in the file perf map
 // binary types should match defined values in ebpf code
@@ -46,7 +51,8 @@ type EventContext struct {
 	EventID         events.ID // int32
 	Syscall         int32
 	Retval          int64
-	StackID         uint32
+	HasStackTrace   bool
+	UserStackError  trace.StackTraceErrorType
 	ProcessorId     uint16
 	PoliciesVersion uint16
 	MatchedPolicies uint64
@@ -133,4 +139,48 @@ type SlimCred struct {
 
 func (s SlimCred) GetSizeBytes() uint32 {
 	return 80
+}
+
+type UnwindRequestType int
+
+// Synchronized with `enum stack_unwind_manager_request_type`
+const (
+	UnwindRequestAddFileMapping      UnwindRequestType = iota
+	UnwindRequestAddAnonymousMapping                   // TODO: do we even need this type of request?
+	UnwindRequestRemoveMapping
+	UnwindRequestRemoveProcess
+	UnwindMaxRequest = UnwindRequestRemoveProcess
+)
+
+// Represents a request from eBPF to the manager
+type UnwindRequest struct {
+	// Used by all requests
+	Type UnwindRequestType
+	Pid  int32
+	// Used by UnwindRequestAddFileMapping, UnwindRequestAddAnonymousMapping, UnwindRequestRemoveMapping
+	Address uint64
+	// Used by requestAddFileMapping and requestAddAnonymousMapping
+	Length uint64
+	// Used by requestAddFileMapping
+	FileOffset   uint64
+	MountNS      uint32
+	Device       uint32
+	Inode        uint64
+	ModifiedTime uint64
+	FilePath     string
+}
+
+type StackFrameRaw struct {
+	PC            uint64
+	FileID        host.FileID
+	AddrOrLine    libpf.AddressOrLineno
+	Type          libpf.FrameType
+	ReturnAddress bool
+}
+
+type StackTraceRaw struct {
+	UserStackError   trace.StackTraceError
+	KernelStackError trace.StackTraceError
+	UserFrames       []StackFrameRaw
+	KernelFrames     []StackFrameRaw
 }

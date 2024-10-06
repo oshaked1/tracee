@@ -12,12 +12,14 @@
 
 statfunc u64 get_time_nanosec_timespec(struct timespec64 *);
 statfunc u64 get_ctime_nanosec_from_inode(struct inode *);
+statfunc u64 get_mtime_nanosec_from_inode(struct inode *);
 statfunc struct dentry *get_mnt_root_ptr_from_vfsmnt(struct vfsmount *);
 statfunc struct dentry *get_d_parent_ptr_from_dentry(struct dentry *);
 statfunc struct qstr get_d_name_from_dentry(struct dentry *);
 statfunc dev_t get_dev_from_file(struct file *);
 statfunc unsigned long get_inode_nr_from_file(struct file *);
 statfunc u64 get_ctime_nanosec_from_file(struct file *);
+statfunc u64 get_mtime_nanosec_from_file(struct file *);
 statfunc unsigned short get_inode_mode_from_file(struct file *);
 statfunc struct path get_path_from_file(struct file *);
 statfunc struct file *get_struct_file_from_fd(u64);
@@ -78,6 +80,29 @@ statfunc u64 get_ctime_nanosec_from_inode(struct inode *inode)
     return get_time_nanosec_timespec(&ts);
 }
 
+statfunc u64 get_mtime_nanosec_from_inode(struct inode *inode)
+{
+    struct timespec64 ts = {};
+
+    // Kernel >= 6.11
+    if (bpf_core_field_exists(inode->i_mtime_sec) && bpf_core_field_exists(inode->i_mtime_nsec)) {
+        ts.tv_sec = BPF_CORE_READ(inode, i_mtime_sec);
+        ts.tv_nsec = BPF_CORE_READ(inode, i_mtime_nsec);
+    }
+    // Kernel 6.6 - 6.10
+    else if (bpf_core_field_exists(((struct inode___older_v611 *) inode)->__i_mtime)) {
+        struct inode___older_v611 *old_inode_v611 = (void *) inode;
+        ts = BPF_CORE_READ(old_inode_v611, __i_mtime);
+    }
+    // Kernel < 6.6
+    else {
+        struct inode___older_v66 *old_inode_v66 = (void *) inode;
+        ts = BPF_CORE_READ(old_inode_v66, i_mtime);
+    }
+
+    return get_time_nanosec_timespec(&ts);
+}
+
 statfunc struct dentry *get_mnt_root_ptr_from_vfsmnt(struct vfsmount *vfsmnt)
 {
     return BPF_CORE_READ(vfsmnt, mnt_root);
@@ -107,6 +132,12 @@ statfunc u64 get_ctime_nanosec_from_file(struct file *file)
 {
     struct inode *f_inode = BPF_CORE_READ(file, f_inode);
     return get_ctime_nanosec_from_inode(f_inode);
+}
+
+statfunc u64 get_mtime_nanosec_from_file(struct file *file)
+{
+    struct inode *f_inode = BPF_CORE_READ(file, f_inode);
+    return get_mtime_nanosec_from_inode(f_inode);
 }
 
 statfunc unsigned short get_inode_mode_from_file(struct file *file)

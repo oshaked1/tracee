@@ -34,6 +34,9 @@ const (
 
 	// find vma not supported
 	BPFLogIDFindVMAUnsupported // BPF_LOG_FIND_VMA_UNSUPPORTED
+
+	// stack unwind functions
+	BPFLogIDStackUnwindLostEvent // BPF_LOG_ID_STACK_UNWIND_LOST_EVENT
 )
 
 var stringMap = map[BPFLogType]string{
@@ -55,6 +58,9 @@ var stringMap = map[BPFLogType]string{
 
 	// find vma not supported
 	BPFLogIDFindVMAUnsupported: "BPF_LOG_FIND_VMA_UNSUPPORTED",
+
+	// stack unwind functions
+	BPFLogIDStackUnwindLostEvent: "BPF_LOG_ID_STACK_UNWIND_LOST_EVENT",
 }
 
 var errorMap = map[BPFLogType]string{
@@ -76,6 +82,9 @@ var errorMap = map[BPFLogType]string{
 
 	// find vma not supported
 	BPFLogIDFindVMAUnsupported: "Finding VMAs is not supported in this kernel",
+
+	// stack unwind functions
+	BPFLogIDStackUnwindLostEvent: "Event was lost between tail calls while creating a stack trace",
 }
 
 func (b BPFLogType) String() string {

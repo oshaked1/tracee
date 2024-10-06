@@ -166,6 +166,7 @@ func (kst *KernelSymbolTable) update(reader io.Reader, requiredDataSymbolsOnly b
 			if _, exists := requiredDataSymbolsSet[symbolName]; !exists {
 				continue
 			}
+			//logger.Infow("symbol", "name", sym.Name, "addr", sym.Address, "symRequired", symRequired, "addrRequired", addrRequired)
 		}
 
 		// Get index of symbol owner, or add it if it doesn't exist

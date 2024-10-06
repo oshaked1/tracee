@@ -16,8 +16,8 @@ statfunc proc_info_t *init_proc_info(u32, u32);
 statfunc void init_task_info_scratch(u32, scratch_t *);
 statfunc task_info_t *init_task_info(u32, u32);
 statfunc event_config_t *get_event_config(u32, u16);
-statfunc int init_program_data(program_data_t *, void *, u32);
-statfunc int init_tailcall_program_data(program_data_t *, void *);
+statfunc int do_init_program_data(program_data_t *, void *, u32, enum bpf_prog_type);
+statfunc int do_init_tailcall_program_data(program_data_t *, void *, enum bpf_prog_type);
 statfunc bool reset_event(event_data_t *, u32);
 statfunc void reset_event_args_buf(event_data_t *);
 statfunc bool thread_stack_tracked(task_info_t *);
@@ -110,11 +110,12 @@ statfunc event_config_t *get_event_config(u32 event_id, u16 policies_version)
 }
 
 // clang-format off
-statfunc int init_program_data(program_data_t *p, void *ctx, u32 event_id)
+statfunc int do_init_program_data(program_data_t *p, void *ctx, u32 event_id, enum bpf_prog_type prog_type)
 {
     int zero = 0;
 
     p->ctx = ctx;
+    p->prog_type = prog_type;
 
     // allow caller to specify a stack/map based event_data_t pointer
     if (p->event == NULL) {
@@ -142,6 +143,8 @@ statfunc int init_program_data(program_data_t *p, void *ctx, u32 event_id)
     p->event->context.ts = get_current_time_in_ns();
     p->event->context.processor_id = (u16) bpf_get_smp_processor_id();
     p->event->context.syscall = get_current_task_syscall_id();
+    p->event->context.has_stack_trace = false;
+    p->event->context.stack_unwind_error = ERR_OK;
 
     u32 host_pid = p->event->context.task.host_pid;
     p->proc_info = bpf_map_lookup_elem(&proc_info_map, &host_pid);
@@ -208,11 +211,12 @@ statfunc int init_program_data(program_data_t *p, void *ctx, u32 event_id)
 }
 // clang-format on
 
-statfunc int init_tailcall_program_data(program_data_t *p, void *ctx)
+statfunc int do_init_tailcall_program_data(program_data_t *p, void *ctx, enum bpf_prog_type prog_type)
 {
     u32 zero = 0;
 
     p->ctx = ctx;
+    p->prog_type = prog_type;
 
     p->event = bpf_map_lookup_elem(&event_data_map, &zero);
     if (unlikely(p->event == NULL))
@@ -235,11 +239,17 @@ statfunc int init_tailcall_program_data(program_data_t *p, void *ctx)
     return 1;
 }
 
+#define init_program_data(p, ctx, event_id) \
+    do_init_program_data(p, ctx, event_id, _Generic((ctx), struct pt_regs *: BPF_PROG_TYPE_KPROBE, struct bpf_raw_tracepoint_args *: BPF_PROG_TYPE_RAW_TRACEPOINT))
+
+#define init_tailcall_program_data(p, ctx) \
+    do_init_tailcall_program_data(p, ctx, _Generic((ctx), struct pt_regs *: BPF_PROG_TYPE_KPROBE, struct bpf_raw_tracepoint_args *: BPF_PROG_TYPE_RAW_TRACEPOINT))
+
 // use this function in programs that send the same event more than once
 statfunc void reset_event_args_buf(event_data_t *event)
 {
-    event->args_buf.offset = 0;
-    event->args_buf.argnum = 0;
+    event->args_buf.metadata.offset = 0;
+    event->args_buf.metadata.argnum = 0;
 
     // Mark all entries in args_offset as invalid (0xFF)
     __builtin_memset(event->args_buf.args_offset, 0xFF, sizeof(event->args_buf.args_offset));
