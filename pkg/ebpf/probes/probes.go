@@ -162,6 +162,13 @@ const (
 	Dup3
 	Dup3Ret
 	ChmodCommon
+	StackUnwindSysExecveRet
+	StackUnwindSysExecveatRet
+	StackUnwindMmapRegion
+	StackUnwindMmapRegionRet
+	StackUnwindSysMunmap
+	StackUnwindSchedProcessExit
+	ExecStackTrace
 )
 
 // Test probe handles

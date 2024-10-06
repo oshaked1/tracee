@@ -9,11 +9,17 @@ package bufferdecoder
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"unsafe"
 
+	"github.com/aquasecurity/libbpfgo"
 	"github.com/aquasecurity/tracee/pkg/errfmt"
 	"github.com/aquasecurity/tracee/pkg/events"
 	"github.com/aquasecurity/tracee/pkg/logger"
 	"github.com/aquasecurity/tracee/types/trace"
+	"github.com/open-telemetry/opentelemetry-ebpf-profiler/host"
+	"github.com/open-telemetry/opentelemetry-ebpf-profiler/libpf"
+	"github.com/open-telemetry/opentelemetry-ebpf-profiler/support"
 )
 
 type EbpfDecoder struct {
@@ -21,7 +27,7 @@ type EbpfDecoder struct {
 	cursor int
 }
 
-var ErrBufferTooShort = errors.New("can't read context from buffer: buffer too short")
+var ErrBufferTooShort = errors.New("can't read from buffer: buffer too short")
 
 // New creates and initializes a new EbpfDecoder using rawBuffer as its initial content.
 // The EbpfDecoder takes ownership of rawBuffer, and the caller should not use rawBuffer after this call.
@@ -76,7 +82,8 @@ func (decoder *EbpfDecoder) DecodeContext(eCtx *EventContext) error {
 	eCtx.EventID = events.ID(int32(binary.LittleEndian.Uint32(decoder.buffer[offset+112 : offset+116])))
 	eCtx.Syscall = int32(binary.LittleEndian.Uint32(decoder.buffer[offset+116 : offset+120]))
 	eCtx.Retval = int64(binary.LittleEndian.Uint64(decoder.buffer[offset+120 : offset+128]))
-	eCtx.StackID = binary.LittleEndian.Uint32(decoder.buffer[offset+128 : offset+132])
+	eCtx.HasStackTrace = binary.LittleEndian.Uint16(decoder.buffer[offset+128:offset+130]) != 0
+	eCtx.UserStackError = trace.StackTraceErrorType(binary.LittleEndian.Uint16(decoder.buffer[offset+130 : offset+132]))
 	eCtx.ProcessorId = binary.LittleEndian.Uint16(decoder.buffer[offset+132 : offset+134])
 	eCtx.PoliciesVersion = binary.LittleEndian.Uint16(decoder.buffer[offset+134 : offset+136])
 	eCtx.MatchedPolicies = binary.LittleEndian.Uint64(decoder.buffer[offset+136 : offset+144])
@@ -115,6 +122,187 @@ func (decoder *EbpfDecoder) DecodeArguments(args []trace.Argument, argnum int, e
 		}
 	}
 	return nil
+}
+
+func (decoder *EbpfDecoder) DecodeStackUnwindRequest() (*UnwindRequest, error) {
+	//logger.Infow("request", "size", decoder.BuffLen())
+	//return nil, nil
+	// Decode request type and build request struct
+	var reqType uint32
+	if err := decoder.DecodeUint32(&reqType); err != nil {
+		return nil, err
+	}
+	request := &UnwindRequest{
+		Type: UnwindRequestType(reqType),
+	}
+
+	// Invalid request type
+	if request.Type > UnwindMaxRequest {
+		return nil, fmt.Errorf("invalid request %d", request.Type)
+	}
+
+	// Decode PID (used by all requests)
+	if err := decoder.DecodeInt32(&request.Pid); err != nil {
+		return nil, err
+	}
+
+	// No more information is used by requestRemovePID
+	if request.Type == UnwindRequestRemoveProcess {
+		return request, nil
+	}
+
+	// Decode mapping address (used by all remaining requests)
+	if err := decoder.DecodeUint64(&request.Address); err != nil {
+		return nil, err
+	}
+
+	// No more information is used by requestRemoveMapping
+	if request.Type == UnwindRequestRemoveMapping {
+		return request, nil
+	}
+
+	// Decode mapping length (used by all remaining requests)
+	if err := decoder.DecodeUint64(&request.Length); err != nil {
+		return nil, err
+	}
+
+	// No more information used by requestAddAnonymousMapping
+	if request.Type == UnwindRequestAddAnonymousMapping {
+		return request, nil
+	}
+
+	// Decode the rest of the fiels, used by requestAddFileMapping
+	if err := decoder.DecodeUint64(&request.FileOffset); err != nil {
+		return nil, err
+	}
+	if err := decoder.DecodeUint32(&request.MountNS); err != nil {
+		return nil, err
+	}
+	if err := decoder.DecodeUint32(&request.Device); err != nil {
+		return nil, err
+	}
+	if err := decoder.DecodeUint64(&request.Inode); err != nil {
+		return nil, err
+	}
+	if err := decoder.DecodeUint64(&request.ModifiedTime); err != nil {
+		return nil, err
+	}
+	var pathLen uint32
+	if err := decoder.DecodeUint32(&pathLen); err != nil {
+		return nil, err
+	}
+	if err := decoder.DecodeString(&request.FilePath, int(pathLen)-1); err != nil { // last character is a NULL terminator
+		return nil, err
+	}
+
+	return request, nil
+}
+
+func getKernelFrames(kernelStacksMap *libbpfgo.BPFMap, kernelStackID int32) ([]StackFrameRaw, trace.StackTraceError) {
+	frames := make([]StackFrameRaw, 0, 15) // conservative estimate for the number of kernel stack frames
+
+	stackBytes, err := kernelStacksMap.GetValue(unsafe.Pointer(&kernelStackID))
+	if err != nil {
+		return frames, trace.StackTraceErrKernelReadStack.GetStructureWithCustomError(err)
+	}
+
+	// TODO: keep track of stack IDs in an LRU slightly smaller than the kernel stack map and perform kernel stack map evictions when an LRU stack id is evicted.
+
+	/*defer func() {
+		// attempt to remove the ID from the map so we don't fill it up
+		if err := kernelStacksMap.DeleteKey(unsafe.Pointer(&kernelStackID)); err != nil {
+			logger.Debugw("failed to delete kernel stack from eBPF map", "error", err)
+		}
+	}()*/
+
+	// Read all stack frames
+	decoder := New(stackBytes)
+	for _ = range support.PerfMaxStackDepth {
+		var val uint64
+		if err := decoder.DecodeUint64(&val); err != nil {
+			return frames, trace.StackTraceErrKernelDecodeStack.GetStructureWithCustomError(err)
+		}
+
+		if val == 0 {
+			break
+		}
+
+		frames = append(frames, StackFrameRaw{
+			PC:   val,
+			Type: libpf.KernelFrame,
+			// For all kernel frames, the kernel unwinder will always produce a
+			// frame in which the RIP is after a call instruction (it hides the
+			// top frames that leads to the unwinder itself).
+			ReturnAddress: true,
+		})
+	}
+
+	return frames, trace.StackTraceErrOk.GetStructure()
+}
+
+func (decoder *EbpfDecoder) DecodeStackTrace(kernelStacksMap *libbpfgo.BPFMap,
+	userStackError trace.StackTraceErrorType) (*StackTraceRaw, error) {
+	var err error
+
+	// Decode stack trace metadata
+	var kernelStackID int32
+	if err = decoder.DecodeInt32(&kernelStackID); err != nil {
+		return nil, err
+	}
+	var userStackLen uint32
+	if err = decoder.DecodeUint32(&userStackLen); err != nil {
+		return nil, err
+	}
+
+	stackTrace := &StackTraceRaw{
+		UserStackError: userStackError.GetStructure(),
+		UserFrames:     make([]StackFrameRaw, 0, userStackLen),
+	}
+
+	// Insert kernel frames
+	if kernelStackID >= 0 {
+		var err trace.StackTraceError
+		stackTrace.KernelFrames, stackTrace.KernelStackError = getKernelFrames(kernelStacksMap, kernelStackID)
+		if err.ErrorType != trace.StackTraceErrOk {
+			logger.Warnw("Failed to get kernel stack frames", "error", stackTrace.KernelStackError.ErrorDesc)
+		}
+	} else {
+		logger.Warnw("Kernel stack trace failed", "error code", kernelStackID)
+		stackTrace.KernelStackError = trace.StackTraceErrKernelGetStackID.GetStructureWithCustomError(
+			fmt.Errorf("bpf_get_stackid() returned with error code %d", kernelStackID),
+		)
+	}
+
+	// Decode user frames
+	for _ = range userStackLen {
+		var pc uint64
+		if err := decoder.DecodeUint64(&pc); err != nil {
+			return nil, err
+		}
+		var fileID uint64
+		if err := decoder.DecodeUint64(&fileID); err != nil {
+			return nil, err
+		}
+		var addrOrLine uint64
+		if err := decoder.DecodeUint64(&addrOrLine); err != nil {
+			return nil, err
+		}
+		var kindAndReturnAddress uint64
+		if err := decoder.DecodeUint64(&kindAndReturnAddress); err != nil {
+			return nil, err
+		}
+		kind := kindAndReturnAddress & 0xff
+		returnAddress := (kindAndReturnAddress >> 8) & 0xff
+		stackTrace.UserFrames = append(stackTrace.UserFrames, StackFrameRaw{
+			PC:            pc,
+			FileID:        host.FileID(fileID),
+			AddrOrLine:    libpf.AddressOrLineno(addrOrLine),
+			Type:          libpf.FrameType(kind),
+			ReturnAddress: returnAddress != 0,
+		})
+	}
+
+	return stackTrace, nil
 }
 
 // DecodeUint8 translates data from the decoder buffer, starting from the decoder cursor, to uint8.
@@ -256,6 +444,17 @@ func (decoder *EbpfDecoder) DecodeBytes(msg []byte, size int) error {
 		return ErrBufferTooShort
 	}
 	_ = copy(msg[:], decoder.buffer[offset:offset+size])
+	decoder.cursor += size
+	return nil
+}
+
+func (decoder *EbpfDecoder) DecodeString(str *string, size int) error {
+	offset := decoder.cursor
+	bufferLen := len(decoder.buffer[offset:])
+	if bufferLen < size {
+		return ErrBufferTooShort
+	}
+	*str = string(decoder.buffer[offset : offset+size])
 	decoder.cursor += size
 	return nil
 }

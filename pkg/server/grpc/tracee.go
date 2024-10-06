@@ -767,11 +767,11 @@ func convertTraceeEventToProto(e trace.Event) (*pb.Event, error) {
 func getProcess(e trace.Event) *pb.Process {
 	var userStackTrace *pb.UserStackTrace
 
-	if len(e.StackAddresses) > 0 {
+	/*if len(e.StackAddresses) > 0 {
 		userStackTrace = &pb.UserStackTrace{
 			Addresses: getStackAddress(e.StackAddresses),
 		}
-	}
+	}*/
 
 	var threadStartTime *timestamp.Timestamp
 	if e.ThreadStartTime != 0 {

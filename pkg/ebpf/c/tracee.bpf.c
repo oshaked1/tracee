@@ -38,6 +38,9 @@
 #include <common/network.h>
 #include <common/probes.h>
 #include <common/signal.h>
+#include <stack_unwind/requests.h>
+#include <stack_unwind/unwind.h>
+#include <stack_unwind/native.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -363,7 +366,7 @@ TRACE_SYSCALL(dup2, SYSCALL_DUP2)
 TRACE_SYSCALL(dup3, SYSCALL_DUP3)
 
 SEC("raw_tracepoint/sys_execve")
-int syscall__execve_enter(void *ctx)
+int syscall__execve_enter(struct bpf_raw_tracepoint_args *ctx)
 {
     program_data_t p = {};
     if (!init_tailcall_program_data(&p, ctx))
@@ -391,7 +394,7 @@ int syscall__execve_enter(void *ctx)
 }
 
 SEC("raw_tracepoint/sys_execve")
-int syscall__execve_exit(void *ctx)
+int syscall__execve_exit(struct bpf_raw_tracepoint_args *ctx)
 {
     program_data_t p = {};
     if (!init_tailcall_program_data(&p, ctx))
@@ -421,7 +424,7 @@ int syscall__execve_exit(void *ctx)
 }
 
 SEC("raw_tracepoint/sys_execveat")
-int syscall__execveat_enter(void *ctx)
+int syscall__execveat_enter(struct bpf_raw_tracepoint_args *ctx)
 {
     program_data_t p = {};
     if (!init_tailcall_program_data(&p, ctx))
@@ -451,7 +454,7 @@ int syscall__execveat_enter(void *ctx)
 }
 
 SEC("raw_tracepoint/sys_execveat")
-int syscall__execveat_exit(void *ctx)
+int syscall__execveat_exit(struct bpf_raw_tracepoint_args *ctx)
 {
     program_data_t p = {};
     if (!init_tailcall_program_data(&p, ctx))
@@ -536,7 +539,7 @@ statfunc int send_socket_dup(program_data_t *p, u64 oldfd, u64 newfd)
 }
 
 SEC("kprobe/sys_dup")
-int sys_dup_exit_tail(void *ctx)
+int sys_dup_exit_tail(struct pt_regs *ctx)
 {
     program_data_t p = {};
     if (!init_tailcall_program_data(&p, ctx))
@@ -621,6 +624,9 @@ int tracepoint__sched__sched_process_fork(struct bpf_raw_tracepoint_args *ctx)
     int child_tid = get_task_host_pid(child);
     int child_ns_pid = get_task_ns_tgid(child);
     int child_ns_tid = get_task_ns_pid(child);
+
+    if (parent_pid != child_pid)
+        mark_process_forked(child_pid);
 
     // Update the task_info map with the new task's info
 
@@ -757,7 +763,7 @@ int tracepoint__sched__sched_process_fork(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-#define MAX_NUM_MODULES          440
+#define MAX_NUM_MODULES          290 // TODO: this was 440 before. If the current value is not enough then programs that use this as an iteration limit should be split using tail calls.
 #define MAX_MODULES_MAP_ENTRIES  2 * MAX_NUM_MODULES
 #define MOD_TREE_LOOP_ITERATIONS 240
 #define MOD_TREE_LOOP_DEPTH      14
@@ -1383,24 +1389,6 @@ int tracepoint__sched__sched_process_exec(struct bpf_raw_tracepoint_args *ctx)
     // Reset thread stack area
     p.task_info->stack = (address_range_t){0};
 
-    // Perform checks below before evaluate_scope_filters(), so tracee can filter by newly created containers
-    // or processes. Assume that a new container, or pod, has started when a process of a newly
-    // created cgroup and mount ns executed a binary.
-
-    if (p.task_info->container_state == CONTAINER_CREATED) {
-        u32 mntns = get_task_mnt_ns_id(p.event->task);
-        struct task_struct *parent = get_parent_task(p.event->task);
-        u32 parent_mntns = get_task_mnt_ns_id(parent);
-        if (mntns != parent_mntns) {
-            u32 cgroup_id_lsb = p.event->context.task.cgroup_id;
-            u8 state = CONTAINER_STARTED;
-            bpf_map_update_elem(&containers_map, &cgroup_id_lsb, &state, BPF_ANY);
-            p.task_info->container_state = state;
-            p.event->context.task.flags |= CONTAINER_STARTED_FLAG; // change for current event
-            p.task_info->context.flags |= CONTAINER_STARTED_FLAG;  // change for future task events
-        }
-    }
-
     struct linux_binprm *bprm = (struct linux_binprm *) ctx->args[2];
     if (bprm == NULL)
         return -1;
@@ -1509,6 +1497,10 @@ int sched_process_exec_event_submit_tail(struct bpf_raw_tracepoint_args *ctx)
             &p.event->args_buf, (void *) env_start, (void *) env_end, envc, 16);
     }
 
+    // Try applying a saved stack trace that was generated at an earlier point in the exec.
+    // Stack traces cannot be generated at this point because the address space of the process
+    // is purged at this point, so stack traces for this event need to be generated earlier.
+    apply_saved_stack_trace(&p);
     events_perf_submit(&p, 0);
     return 0;
 }
@@ -1585,7 +1577,7 @@ int tracepoint__sched__sched_process_free(struct bpf_raw_tracepoint_args *ctx)
 }
 
 SEC("raw_tracepoint/syscall__accept4")
-int syscall__accept4(void *ctx)
+int syscall__accept4(struct bpf_raw_tracepoint_args *ctx)
 {
     args_t saved_args;
     if (load_args(&saved_args, SOCKET_ACCEPT) != 0) {
@@ -1803,7 +1795,7 @@ int uprobe_seq_ops_trigger(struct pt_regs *ctx)
     if (unlikely(etext_addr == NULL))
         return 0;
 
-    u32 count_off = p.event->args_buf.offset + 1;
+    u32 count_off = p.event->args_buf.metadata.offset + 1;
     save_u64_arr_to_buf(&p.event->args_buf, NULL, 0, 0); // init u64 array with size 0
 
 #pragma unroll
@@ -2214,6 +2206,29 @@ int BPF_KPROBE(trace_security_bprm_check)
     program_data_t p = {};
     if (!init_program_data(&p, ctx, SECURITY_BPRM_CHECK))
         return 0;
+    
+    // Perform checks below before evaluate_scope_filters(), so tracee can filter by newly created containers
+    // or processes. Assume that a new container, or pod, has started when a process of a newly
+    // created cgroup and mount ns executed a binary.
+    // This is performed at security_bprm_check and not at sched_process_exec because the latter
+    // happens after the executed binary and its interpreter are loaded into memory,
+    // which causes stack traces with a container scope to fail for the first process in the container.
+    // We are not concerned about failed executions because there is no "exited" container state anyway.
+    // TODO: remove reliance on sys_enter
+
+    if (p.task_info->container_state == CONTAINER_CREATED) {
+        u32 mntns = get_task_mnt_ns_id(p.event->task);
+        struct task_struct *parent = get_parent_task(p.event->task);
+        u32 parent_mntns = get_task_mnt_ns_id(parent);
+        if (mntns != parent_mntns) {
+            u32 cgroup_id_lsb = p.event->context.task.cgroup_id;
+            u8 state = CONTAINER_STARTED;
+            bpf_map_update_elem(&containers_map, &cgroup_id_lsb, &state, BPF_ANY);
+            p.task_info->container_state = state;
+            p.event->context.task.flags |= CONTAINER_STARTED_FLAG; // change for current event
+            p.task_info->context.flags |= CONTAINER_STARTED_FLAG;  // change for future task events
+        }
+    }
 
     if (!evaluate_scope_filters(&p))
         return 0;
@@ -2224,17 +2239,18 @@ int BPF_KPROBE(trace_security_bprm_check)
     unsigned long inode_nr = get_inode_nr_from_file(file);
     void *file_path = get_path_str(__builtin_preserve_access_index(&file->f_path));
 
-    syscall_data_t *sys = &p.task_info->syscall_data;
+    struct pt_regs *task_regs = get_current_task_pt_regs();
+
     const char *const *argv = NULL;
     const char *const *envp = NULL;
-    switch (sys->id) {
+    switch (get_current_task_syscall_id()) {
         case SYSCALL_EXECVE:
-            argv = (const char *const *) sys->args.args[1];
-            envp = (const char *const *) sys->args.args[2];
+            argv = (const char *const *) get_syscall_arg2(p.event->task, task_regs, false);
+            envp = (const char *const *) get_syscall_arg3(p.event->task, task_regs, false);
             break;
         case SYSCALL_EXECVEAT:
-            argv = (const char *const *) sys->args.args[2];
-            envp = (const char *const *) sys->args.args[3];
+            argv = (const char *const *) get_syscall_arg3(p.event->task, task_regs, false);
+            envp = (const char *const *) get_syscall_arg4(p.event->task, task_regs, false);
             break;
         default:
             break;
@@ -2486,7 +2502,7 @@ int BPF_KPROBE(trace_switch_task_namespaces)
         save_to_submit_buf(&p.event->args_buf, (void *) &new_net, sizeof(u32), 5);
     if (old_cgroup != new_cgroup)
         save_to_submit_buf(&p.event->args_buf, (void *) &new_cgroup, sizeof(u32), 6);
-    if (p.event->args_buf.argnum > 1)
+    if (p.event->args_buf.metadata.argnum > 1)
         events_perf_submit(&p, 0);
 
     return 0;
@@ -2943,9 +2959,9 @@ enum bin_type_e
 
 statfunc u32 tail_call_send_bin(void *ctx, program_data_t *p, bin_args_t *bin_args, int tail_call)
 {
-    if (p->event->args_buf.offset < ARGS_BUF_SIZE - sizeof(bin_args_t)) {
+    if (p->event->args_buf.metadata.offset < ARGS_BUF_SIZE - sizeof(bin_args_t)) {
         bpf_probe_read_kernel(
-            &(p->event->args_buf.args[p->event->args_buf.offset]), sizeof(bin_args_t), bin_args);
+            &(p->event->args_buf.args[p->event->args_buf.metadata.offset]), sizeof(bin_args_t), bin_args);
         if (tail_call == TAIL_SEND_BIN)
             bpf_tail_call(ctx, &prog_array, tail_call);
         else if (tail_call == TAIL_SEND_BIN_TP)
@@ -2971,10 +2987,10 @@ statfunc u32 send_bin_helper(void *ctx, void *prog_array, int tail_call)
     u32 zero = 0;
 
     event_data_t *event = bpf_map_lookup_elem(&event_data_map, &zero);
-    if (!event || (event->args_buf.offset > ARGS_BUF_SIZE - sizeof(bin_args_t)))
+    if (!event || (event->args_buf.metadata.offset > ARGS_BUF_SIZE - sizeof(bin_args_t)))
         return 0;
 
-    bin_args_t *bin_args = (bin_args_t *) &(event->args_buf.args[event->args_buf.offset]);
+    bin_args_t *bin_args = (bin_args_t *) &(event->args_buf.args[event->args_buf.metadata.offset]);
 
     if (bin_args->full_size <= 0) {
         // If there are more vector elements, continue to the next one
@@ -3749,7 +3765,7 @@ int BPF_KPROBE(trace_security_file_mprotect)
 }
 
 SEC("raw_tracepoint/sys_init_module")
-int syscall__init_module(void *ctx)
+int syscall__init_module(struct bpf_raw_tracepoint_args *ctx)
 {
     program_data_t p = {};
     if (!init_tailcall_program_data(&p, ctx))
@@ -5296,7 +5312,7 @@ struct {
     __type(value, u32);
 } stack_pivot_syscalls SEC(".maps");
 
-statfunc void check_suspicious_syscall_source(void *ctx, struct pt_regs *regs, u32 syscall)
+statfunc void check_suspicious_syscall_source(struct pt_regs *ctx, struct pt_regs *regs, u32 syscall)
 {
     program_data_t p = {};
     if (!init_program_data(&p, ctx, SUSPICIOUS_SYSCALL_SOURCE))
@@ -5355,7 +5371,7 @@ statfunc void check_suspicious_syscall_source(void *ctx, struct pt_regs *regs, u
     events_perf_submit(&p, 0);
 }
 
-statfunc void check_stack_pivot(void *ctx, struct pt_regs *regs, u32 syscall)
+statfunc void check_stack_pivot(struct pt_regs *ctx, struct pt_regs *regs, u32 syscall)
 {
     program_data_t p = {};
 
@@ -6185,7 +6201,8 @@ int BPF_KPROBE(cgroup_bpf_run_filter_skb)
     eventctx->ts = p.event->context.ts;                     // copy timestamp from current ctx
     neteventctx.argnum = 1;                                 // 1 argument (add more if needed)
     eventctx->eventid = NET_PACKET_IP;                      // will be changed in skb program
-    eventctx->stack_id = 0;                                 // no stack trace
+    eventctx->has_stack_trace = false;                      // no stack trace
+    eventctx->stack_unwind_error = ERR_OK;
     eventctx->processor_id = p.event->context.processor_id; // copy from current ctx
     eventctx->policies_version = netctx->policies_version;  // pick policies_version from net ctx
     eventctx->matched_policies = netctx->matched_policies;  // pick matched_policies from net ctx
@@ -7148,6 +7165,181 @@ int sched_process_exit_signal(struct bpf_raw_tracepoint_args *ctx)
 }
 
 // END OF Control Plane Programs
+
+//
+// Stack trace programs
+//
+
+SEC("kretprobe/sys_execve_stack_unwind")
+int BPF_KPROBE(trace_ret_sys_execve_stack_unwind)
+{
+    pid_t tgid = bpf_get_current_pid_tgid() >> 32;
+    mark_process_execed(tgid);
+    return 0;
+}
+
+SEC("kprobe/mmap_region_stack_unwind")
+TRACE_ENT_FUNC(mmap_region_stack_unwind, STACK_TRACE)
+
+SEC("kretprobe/mmap_region_stack_unwind")
+int BPF_KPROBE(trace_ret_mmap_region_stack_unwind)
+{
+    args_t saved_args;
+    if (load_args(&saved_args, STACK_TRACE) != 0) {
+        // Missed entry or not traced
+        return 0;
+    }
+
+    program_data_t p = {};
+    if (!init_program_data(&p, ctx, STACK_TRACE))
+        return 0;
+
+    if (!evaluate_scope_filters(&p))
+        return 0;
+    
+    stack_unwind_mark_process_tracked();
+    //stack_unwind_
+    
+    stack_unwind_request_add_mapping(
+        ctx,
+        (struct file *) saved_args.args[0],
+        PT_REGS_RC(ctx),
+        saved_args.args[2],
+        saved_args.args[3],
+        saved_args.args[4] << PAGE_SHIFT
+    );
+
+    return 0;
+}
+
+SEC("kprobe/security_file_mprotect_stack_unwind")
+int BPF_KPROBE(security_file_mprotect_stack_unwind)
+{
+    // TODO: request add mapping if changed to executable, or remove mapping if changed to non-executable
+    return 0;
+}
+
+// TODO: handle mremap operations
+
+SEC("kprobe/sys_munmap_stack_unwind")
+int BPF_KPROBE(sys_munmap_stack_unwind)
+{
+    if (stack_unwind_process_is_tracked()) {
+        struct task_struct *task = (struct task_struct *) bpf_get_current_task();
+        stack_unwind_request_remove_mapping(ctx, get_syscall_arg1(task, ctx, true));
+    }
+
+    return 0;
+}
+
+SEC("raw_tracepoint/sched_process_exit_stack_unwind")
+int sched_process_exit_stack_unwind(struct bpf_raw_tracepoint_args *ctx)
+{
+    // Make sure this is the last thread in the process
+    bool group_dead = false;
+    struct task_struct *task = (struct task_struct *) bpf_get_current_task();
+    if (unlikely(task == NULL))
+        return 0;
+    struct signal_struct *signal = BPF_CORE_READ(task, signal);
+    atomic_t live = BPF_CORE_READ(signal, live);
+
+    // This check could be true for multiple thread exits if the thread count was 0 when the hooks
+    // were triggered. This could happen for example if the threads performed exit in different CPUs
+    // simultaneously.
+    // In any case, there is no problem with removing this process.
+    if (live.counter == 0)
+        group_dead = true;
+    
+    // There are other live threads, don't remove this process
+    if (!group_dead)
+        return 0;
+    
+    if (stack_unwind_process_is_tracked()) {
+        stack_unwind_request_remove_process(ctx);
+        stack_unwind_mark_process_untracked();
+    }
+
+    return 0;
+}
+
+SEC("kprobe/stack_unwind")
+int BPF_KPROBE(stack_unwind_kp)
+{
+    stack_unwind_step(ctx, unwind_start, BPF_PROG_TYPE_KPROBE, true);
+    return 0;
+}
+
+SEC("raw_tracepoint/stack_unwind")
+int stack_unwind_tp(struct bpf_raw_tracepoint_args *ctx)
+{
+    stack_unwind_step(ctx, unwind_start, BPF_PROG_TYPE_RAW_TRACEPOINT, true);
+    return 0;
+}
+
+SEC("kprobe/stack_unwind_stop")
+int BPF_KPROBE(stack_unwind_stop_kp)
+{
+    stack_unwind_step(ctx, unwind_stop, BPF_PROG_TYPE_KPROBE, true);
+    return 0;
+}
+
+SEC("raw_tracepoint/stack_unwind_stop")
+int stack_unwind_stop_tp(struct bpf_raw_tracepoint_args *ctx)
+{
+    stack_unwind_step(ctx, unwind_stop, BPF_PROG_TYPE_RAW_TRACEPOINT, true);
+    return 0;
+}
+
+SEC("kprobe/stack_unwind_native")
+int BPF_KPROBE(stack_unwind_native_kp)
+{
+    stack_unwind_step(ctx, unwind_native, BPF_PROG_TYPE_KPROBE, true);
+    return 0;
+}
+
+SEC("raw_tracepoint/stack_unwind_native")
+int stack_unwind_native_tp(struct bpf_raw_tracepoint_args *ctx)
+{
+    stack_unwind_step(ctx, unwind_native, BPF_PROG_TYPE_RAW_TRACEPOINT, true);
+    return 0;
+}
+
+/**
+ * This program generates a stack trace to be used for sched_process_exec events.
+ * Stack traces cannot be generated during sched_process_exec, because at that point of the
+ * execution the address space does not contain any of the code that triggered the execution.
+ * This program is currently attached to security_bprm_check.
+ * A better candidate for this would have been sched_prepare_exec as it is just before
+ * the address space is purged and the point of no return is reached, but unfortunately
+ * it is only available from kernel 6.10.
+ */
+SEC("kprobe/exec_stack_trace")
+int BPF_KPROBE(generate_exec_stack_trace)
+{
+    // Make sure stack traces are selected for sched_process_exec (this check
+    // is first because it's faster than the rest and less likely to pass)
+    if (!stack_trace_selected_for_event(SCHED_PROCESS_EXEC))
+        return 0;
+    
+    // Make sure sched_process_exec needs to be submitted
+    program_data_t p = {};
+    if (!init_program_data(&p, ctx, SCHED_PROCESS_EXEC))
+        return 0;
+
+    if (!evaluate_scope_filters(&p))
+        return 0;
+    
+    // Use stack trace pseudo event so that this temporary event
+    // (whose only purpose is to hold the stack trace) is not submitted.
+    if (!reset_event(p.event, STACK_TRACE))
+        return 0;
+
+    // Generate the stack trace. This stack unwind code is responsible for
+    // detecting that the event should not be submitted and should be saved instead.
+    generate_stack_trace(&p);
+
+    return 0;
+}
 
 // Tests
 

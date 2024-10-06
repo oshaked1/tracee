@@ -6,6 +6,7 @@
 #include <common/context.h>
 #include <common/hash.h>
 #include <common/network.h>
+#include <stack_unwind/unwind.h>
 
 // PROTOTYPES
 
@@ -86,21 +87,21 @@ statfunc int save_to_submit_buf(args_buffer_t *buf, void *ptr, u32 size, u8 inde
         return 0;
 
     barrier();
-    if (buf->offset > ARGS_BUF_SIZE - 1)
+    if (buf->metadata.offset > ARGS_BUF_SIZE - 1)
         return 0;
 
     // Save argument index
-    buf->args[buf->offset] = index;
+    buf->args[buf->metadata.offset] = index;
 
     // Satisfy verifier
-    if (buf->offset > ARGS_BUF_SIZE - (MAX_ELEMENT_SIZE + 1))
+    if (buf->metadata.offset > ARGS_BUF_SIZE - (MAX_ELEMENT_SIZE + 1))
         return 0;
 
     // Read into buffer
-    if (bpf_probe_read(&(buf->args[buf->offset + 1]), size, ptr) == 0) {
+    if (bpf_probe_read(&(buf->args[buf->metadata.offset + 1]), size, ptr) == 0) {
         // We update offset only if all writes were successful
-        buf->offset += size + 1;
-        buf->argnum++;
+        buf->metadata.offset += size + 1;
+        buf->metadata.argnum++;
         return 1;
     }
 
@@ -114,30 +115,31 @@ statfunc int save_bytes_to_buf(args_buffer_t *buf, void *ptr, u32 size, u8 index
     if (size == 0)
         return 0;
 
-    if (buf->offset > ARGS_BUF_SIZE - 1)
+    barrier();
+    if (buf->metadata.offset > ARGS_BUF_SIZE - 1)
         return 0;
 
     // Save argument index
-    buf->args[buf->offset] = index;
+    buf->args[buf->metadata.offset] = index;
 
-    if (buf->offset > ARGS_BUF_SIZE - (sizeof(int) + 1))
+    if (buf->metadata.offset > ARGS_BUF_SIZE - (sizeof(int) + 1))
         return 0;
 
     // Save size to buffer
-    if (bpf_probe_read(&(buf->args[buf->offset + 1]), sizeof(int), &size) != 0) {
+    if (bpf_probe_read(&(buf->args[buf->metadata.offset + 1]), sizeof(int), &size) != 0) {
         return 0;
     }
 
-    if (buf->offset > ARGS_BUF_SIZE - (MAX_BYTES_ARR_SIZE + 1 + sizeof(int)))
+    if (buf->metadata.offset > ARGS_BUF_SIZE - (MAX_BYTES_ARR_SIZE + 1 + sizeof(int)))
         return 0;
 
     // Read bytes into buffer
-    if (bpf_probe_read(&(buf->args[buf->offset + 1 + sizeof(int)]),
+    if (bpf_probe_read(&(buf->args[buf->metadata.offset + 1 + sizeof(int)]),
                        size & (MAX_BYTES_ARR_SIZE - 1),
                        ptr) == 0) {
         // We update offset only if all writes were successful
-        buf->offset += size + 1 + sizeof(int);
-        buf->argnum++;
+        buf->metadata.offset += size + 1 + sizeof(int);
+        buf->metadata.argnum++;
         return 1;
     }
 
@@ -150,7 +152,7 @@ statfunc int load_str_from_buf(args_buffer_t *buf, char *str, u8 index, enum str
     u32 size;
 
     // skip if index is not in buffer
-    if (index > buf->argnum)
+    if (index > buf->metadata.argnum)
         return 0;
 
     offset = buf->args_offset[index];
@@ -215,30 +217,31 @@ statfunc int save_str_to_buf(args_buffer_t *buf, void *ptr, u8 index)
 {
     // Data saved to submit buf: [index][size][ ... string ... ]
 
-    if (buf->offset > ARGS_BUF_SIZE - 1)
+    barrier();
+    if (buf->metadata.offset > ARGS_BUF_SIZE - 1)
         return 0;
 
     // Save argument index
-    buf->args[buf->offset] = index;
+    buf->args[buf->metadata.offset] = index;
 
     // Save offset at the specified index
-    buf->args_offset[index] = buf->offset;
+    buf->args_offset[index] = buf->metadata.offset;
 
     // Satisfy verifier for probe read
-    if (buf->offset > ARGS_BUF_SIZE - (MAX_STRING_SIZE + 1 + sizeof(int)))
+    barrier();
+    if (buf->metadata.offset > ARGS_BUF_SIZE - (MAX_STRING_SIZE + 1 + sizeof(int)))
         return 0;
 
     // Read into buffer
-    int sz = bpf_probe_read_str(&(buf->args[buf->offset + 1 + sizeof(int)]), MAX_STRING_SIZE, ptr);
+    int sz = bpf_probe_read_str(&(buf->args[buf->metadata.offset + 1 + sizeof(int)]), MAX_STRING_SIZE, ptr);
     if (sz > 0) {
-        barrier();
         // Satisfy verifier for probe read
-        if (buf->offset > ARGS_BUF_SIZE - (MAX_STRING_SIZE + 1 + sizeof(int)))
+        if (buf->metadata.offset > ARGS_BUF_SIZE - (MAX_STRING_SIZE + 1 + sizeof(int)))
             return 0;
 
-        __builtin_memcpy(&(buf->args[buf->offset + 1]), &sz, sizeof(int));
-        buf->offset += sz + sizeof(int) + 1;
-        buf->argnum++;
+        __builtin_memcpy(&(buf->args[buf->metadata.offset + 1]), &sz, sizeof(int));
+        buf->metadata.offset += sz + sizeof(int) + 1;
+        buf->metadata.argnum++;
         return 1;
     }
 
@@ -253,14 +256,15 @@ add_u64_elements_to_buf(args_buffer_t *buf, const u64 __user *ptr, int len, vola
     u8 elem_num = 0;
 #pragma unroll
     for (int i = 0; i < len; i++) {
-        void *addr = &(buf->args[buf->offset]);
-        if (buf->offset > ARGS_BUF_SIZE - sizeof(u64))
+        barrier();
+        void *addr = &(buf->args[buf->metadata.offset]);
+        if (buf->metadata.offset > ARGS_BUF_SIZE - sizeof(u64))
             // not enough space - return
             goto out;
         if (bpf_probe_read(addr, sizeof(u64), (void *) &ptr[i]) != 0)
             goto out;
         elem_num++;
-        buf->offset += sizeof(u64);
+        buf->metadata.offset += sizeof(u64);
     }
 out:
     // save number of elements in the array
@@ -279,28 +283,29 @@ statfunc int save_u64_arr_to_buf(args_buffer_t *buf, const u64 *ptr, int len, u8
     u16 restricted_len = (u16) len;
     u32 total_size = sizeof(u64) * restricted_len;
 
-    if (buf->offset > ARGS_BUF_SIZE - 1)
+    barrier();
+    if (buf->metadata.offset > ARGS_BUF_SIZE - 1)
         return 0;
 
     // Save argument index
-    buf->args[buf->offset] = index;
+    buf->args[buf->metadata.offset] = index;
 
     // Save number of elements
-    if (buf->offset + sizeof(index) > ARGS_BUF_SIZE - sizeof(restricted_len))
+    if (buf->metadata.offset + sizeof(index) > ARGS_BUF_SIZE - sizeof(restricted_len))
         return 0;
     __builtin_memcpy(
-        &(buf->args[buf->offset + sizeof(index)]), &restricted_len, sizeof(restricted_len));
+        &(buf->args[buf->metadata.offset + sizeof(index)]), &restricted_len, sizeof(restricted_len));
 
-    if ((buf->offset + sizeof(index) + sizeof(restricted_len) > ARGS_BUF_SIZE - MAX_BYTES_ARR_SIZE))
+    if ((buf->metadata.offset + sizeof(index) + sizeof(restricted_len) > ARGS_BUF_SIZE - MAX_BYTES_ARR_SIZE))
         return 0;
 
-    if (bpf_probe_read(&(buf->args[buf->offset + sizeof(index) + sizeof(restricted_len)]),
+    if (bpf_probe_read(&(buf->args[buf->metadata.offset + sizeof(index) + sizeof(restricted_len)]),
                        total_size & (MAX_BYTES_ARR_SIZE - 1),
                        (void *) ptr) != 0)
         return 0;
 
-    buf->argnum++;
-    buf->offset += sizeof(index) + sizeof(restricted_len) + total_size;
+    buf->metadata.argnum++;
+    buf->metadata.offset += sizeof(index) + sizeof(restricted_len) + total_size;
 
     return 1;
 }
@@ -311,15 +316,16 @@ statfunc int save_str_arr_to_buf(args_buffer_t *buf, const char __user *const __
 
     u8 elem_num = 0;
 
-    if (buf->offset > ARGS_BUF_SIZE - 1)
+    barrier();
+    if (buf->metadata.offset > ARGS_BUF_SIZE - 1)
         return 0;
 
     // Save argument index
-    buf->args[buf->offset] = index;
+    buf->args[buf->metadata.offset] = index;
 
     // Save space for number of elements (1 byte)
-    u32 orig_off = buf->offset + 1;
-    buf->offset += 2;
+    u32 orig_off = buf->metadata.offset + 1;
+    buf->metadata.offset += 2;
 
 #pragma unroll
     for (int i = 0; i < MAX_STR_ARR_ELEM; i++) {
@@ -328,18 +334,18 @@ statfunc int save_str_arr_to_buf(args_buffer_t *buf, const char __user *const __
         if (!argp)
             goto out;
 
-        if (buf->offset > ARGS_BUF_SIZE - MAX_STRING_SIZE - sizeof(int))
+        if (buf->metadata.offset > ARGS_BUF_SIZE - MAX_STRING_SIZE - sizeof(int))
             // not enough space - return
             goto out;
 
         // Read into buffer
-        int sz = bpf_probe_read_str(&(buf->args[buf->offset + sizeof(int)]), MAX_STRING_SIZE, argp);
+        int sz = bpf_probe_read_str(&(buf->args[buf->metadata.offset + sizeof(int)]), MAX_STRING_SIZE, argp);
         if (sz > 0) {
-            if (buf->offset > ARGS_BUF_SIZE - sizeof(int))
+            if (buf->metadata.offset > ARGS_BUF_SIZE - sizeof(int))
                 // Satisfy validator
                 goto out;
-            bpf_probe_read(&(buf->args[buf->offset]), sizeof(int), &sz);
-            buf->offset += sz + sizeof(int);
+            bpf_probe_read(&(buf->args[buf->metadata.offset]), sizeof(int), &sz);
+            buf->metadata.offset += sz + sizeof(int);
             elem_num++;
             continue;
         } else {
@@ -348,18 +354,20 @@ statfunc int save_str_arr_to_buf(args_buffer_t *buf, const char __user *const __
     }
     // handle truncated argument list
     char ellipsis[] = "...";
-    if (buf->offset > ARGS_BUF_SIZE - MAX_STRING_SIZE - sizeof(int))
+
+    barrier();
+    if (buf->metadata.offset > ARGS_BUF_SIZE - MAX_STRING_SIZE - sizeof(int))
         // not enough space - return
         goto out;
 
     // Read into buffer
-    int sz = bpf_probe_read_str(&(buf->args[buf->offset + sizeof(int)]), MAX_STRING_SIZE, ellipsis);
+    int sz = bpf_probe_read_str(&(buf->args[buf->metadata.offset + sizeof(int)]), MAX_STRING_SIZE, ellipsis);
     if (sz > 0) {
-        if (buf->offset > ARGS_BUF_SIZE - sizeof(int))
+        if (buf->metadata.offset > ARGS_BUF_SIZE - sizeof(int))
             // Satisfy validator
             goto out;
-        bpf_probe_read(&(buf->args[buf->offset]), sizeof(int), &sz);
-        buf->offset += sz + sizeof(int);
+        bpf_probe_read(&(buf->args[buf->metadata.offset]), sizeof(int), &sz);
+        buf->metadata.offset += sz + sizeof(int);
         elem_num++;
     }
 out:
@@ -367,7 +375,7 @@ out:
     if (orig_off > ARGS_BUF_SIZE - 1)
         return 0;
     buf->args[orig_off] = elem_num;
-    buf->argnum++;
+    buf->metadata.argnum++;
     return 1;
 }
 
@@ -387,33 +395,34 @@ statfunc int save_args_str_arr_to_buf(
         len = MAX_ARR_LEN - 1;
 
     // Save argument index
-    if (buf->offset > ARGS_BUF_SIZE - 1)
+    if (buf->metadata.offset > ARGS_BUF_SIZE - 1)
         return 0;
-    buf->args[buf->offset] = index;
+    buf->args[buf->metadata.offset] = index;
 
     // Satisfy validator for probe read
-    if ((buf->offset + 1) > ARGS_BUF_SIZE - sizeof(int))
+    barrier();
+    if ((buf->metadata.offset + 1) > ARGS_BUF_SIZE - sizeof(int))
         return 0;
 
     // Save array length
-    bpf_probe_read(&(buf->args[buf->offset + 1]), sizeof(int), &len);
+    bpf_probe_read(&(buf->args[buf->metadata.offset + 1]), sizeof(int), &len);
 
     // Satisfy validator for probe read
-    if ((buf->offset + 5) > ARGS_BUF_SIZE - sizeof(int))
+    if ((buf->metadata.offset + 5) > ARGS_BUF_SIZE - sizeof(int))
         return 0;
 
     // Save number of arguments
-    bpf_probe_read(&(buf->args[buf->offset + 5]), sizeof(int), &elem_num);
+    bpf_probe_read(&(buf->args[buf->metadata.offset + 5]), sizeof(int), &elem_num);
 
     // Satisfy validator for probe read
-    if ((buf->offset + 9) > ARGS_BUF_SIZE - MAX_ARR_LEN)
+    if ((buf->metadata.offset + 9) > ARGS_BUF_SIZE - MAX_ARR_LEN)
         return 0;
 
     // Read into buffer
-    if (bpf_probe_read(&(buf->args[buf->offset + 9]), len & (MAX_ARR_LEN - 1), start) == 0) {
+    if (bpf_probe_read(&(buf->args[buf->metadata.offset + 9]), len & (MAX_ARR_LEN - 1), start) == 0) {
         // We update offset only if all writes were successful
-        buf->offset += len + 9;
-        buf->argnum++;
+        buf->metadata.offset += len + 9;
+        buf->metadata.argnum++;
         return 1;
     }
 
@@ -592,6 +601,28 @@ struct events_stats {
 typedef struct events_stats events_stats_t;
 #endif
 
+statfunc int do_submit_event(void *ctx, event_data_t *event)
+{
+    // calculate event size:
+    // context + arg buffer metadata + arg buffer size + stack_trace if exists
+    u32 size = sizeof(event_context_t) + sizeof(args_metadata_t) + event->args_buf.metadata.offset;
+    if (event->context.has_stack_trace) {
+        barrier();
+        StackTrace *stack_trace = get_stack_trace_from_event(event);
+        if (stack_trace == NULL)
+            return -1;
+        size += sizeof(stack_trace_metadata_t) + stack_trace->metadata.stack_len*sizeof(StackFrame);
+    }
+
+    // inline bounds check to force compiler to use the register of size
+    asm volatile("if %[size] < %[max_size] goto +1;\n"
+                 "%[size] = %[max_size];\n"
+                 :
+                 : [size] "r"(size), [max_size] "i"(MAX_EVENT_SIZE));
+
+    return bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, size);
+}
+
 statfunc int events_perf_submit(program_data_t *p, long ret)
 {
     p->event->context.retval = ret;
@@ -601,24 +632,21 @@ statfunc int events_perf_submit(program_data_t *p, long ret)
     // keep task_info updated
     bpf_probe_read_kernel(&p->task_info->context, sizeof(task_context_t), &p->event->context.task);
 
+    // Check if we should add a stack trace.
+    if (!p->event->context.has_stack_trace && stack_trace_selected_for_event(p->event->context.eventid))
+        // If successfull, this call will not return - it will tail call into the stack unwinder program,
+        // which is responsible for submitting the event with the added stack trace when it's done.
+        generate_stack_trace(p);
+
     // Get Stack trace
-    if (p->config->options & OPT_CAPTURE_STACK_TRACES) {
+    /*if (p->config->options & OPT_CAPTURE_STACK_TRACES) {
         int stack_id = bpf_get_stackid(p->ctx, &stack_addresses, BPF_F_USER_STACK);
         if (stack_id >= 0) {
             p->event->context.stack_id = stack_id;
         }
-    }
+    }*/
 
-    u32 size = sizeof(event_context_t) + sizeof(u8) +
-               p->event->args_buf.offset; // context + argnum + arg buffer size
-
-    // inline bounds check to force compiler to use the register of size
-    asm volatile("if %[size] < %[max_size] goto +1;\n"
-                 "%[size] = %[max_size];\n"
-                 :
-                 : [size] "r"(size), [max_size] "i"(MAX_EVENT_SIZE));
-
-    long perf_ret = bpf_perf_event_output(p->ctx, &events, BPF_F_CURRENT_CPU, p->event, size);
+    long perf_ret = do_submit_event(p->ctx, p->event);
 
 #ifdef METRICS
     // update event stats
@@ -637,7 +665,7 @@ statfunc int events_perf_submit(program_data_t *p, long ret)
 statfunc int signal_perf_submit(void *ctx, controlplane_signal_t *sig)
 {
     u32 size =
-        sizeof(u32) + sizeof(u8) + sig->args_buf.offset; // signal id + argnum + arg buffer size
+        sizeof(u32) + sizeof(args_metadata_t) + sig->args_buf.metadata.offset; // signal id + argnum + arg buffer size
 
     // inline bounds check to force compiler to use the register of size
     asm volatile("if %[size] < %[max_size] goto +1;\n"

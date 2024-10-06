@@ -191,3 +191,39 @@ func extractNSFromLink(link string) (int, error) {
 	}
 	return ns, nil
 }
+
+// GetAnyProcessInNS returns the PID of any process in the given namespace type and number.
+// It returns the first process it finds when iterating over /proc that satisfies the request.
+func GetAnyProcessInNS(nsName string, nsNum int) (uint, error) {
+	procDir, err := os.Open("/proc")
+	if err != nil {
+		return 0, errfmt.Errorf("could not open proc dir: %v", err)
+	}
+	defer func() {
+		if err := procDir.Close(); err != nil {
+			logger.Errorw("Closing file", "error", err)
+		}
+	}()
+
+	entries, err := procDir.Readdirnames(-1)
+	if err != nil {
+		return 0, errfmt.Errorf("could not read proc dir: %v", err)
+	}
+
+	for _, entry := range entries {
+		pid, err := strconv.ParseUint(entry, 10, 32)
+		if err != nil {
+			continue
+		}
+		ns, err := GetProcNS(uint(pid), nsName)
+		if err != nil {
+			logger.Debugw("Failed fetching process namespace", "pid", pid, "namespace", nsName, "error", err)
+			continue
+		}
+		if ns == nsNum {
+			return uint(pid), nil
+		}
+	}
+
+	return 0, errfmt.Errorf("could not find any process in %s namesapce %d", nsName, nsNum)
+}
