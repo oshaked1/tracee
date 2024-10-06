@@ -14,8 +14,8 @@ statfunc controlplane_signal_t *init_controlplane_signal(u32 id)
         return NULL;
 
     signal->event_id = id;
-    signal->args_buf.argnum = 0;
-    signal->args_buf.offset = 0;
+    signal->args_buf.metadata.argnum = 0;
+    signal->args_buf.metadata.offset = 0;
 
     return signal;
 }

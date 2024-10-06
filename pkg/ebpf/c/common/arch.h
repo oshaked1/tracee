@@ -13,6 +13,7 @@ statfunc bool is_x86_compat(struct task_struct *);
 statfunc bool is_arm64_compat(struct task_struct *);
 statfunc bool is_compat(struct task_struct *);
 statfunc int get_syscall_id_from_regs(struct pt_regs *);
+statfunc struct pt_regs *get_task_pt_regs_manual(struct task_struct *task);
 statfunc struct pt_regs *get_current_task_pt_regs(void);
 statfunc bool has_syscall_fd_arg(uint);
 statfunc uint get_syscall_fd_num_from_arg(uint syscall_id, args_t *);
@@ -58,6 +59,21 @@ statfunc int get_syscall_id_from_regs(struct pt_regs *regs)
     return id;
 }
 
+/**
+ * Get a task's registers manually, instead of using the bpf_task_pt_regs() helper.
+ * NOTE: using get_current_task_pt_regs() is preferred, use this only if the task is not the current one.
+ */
+statfunc struct pt_regs *get_task_pt_regs_manual(struct task_struct *task)
+{
+    // THREAD_SIZE here is statistically defined and assumed to work for 4k page sizes.
+#if defined(bpf_target_x86)
+    void *__ptr = BPF_CORE_READ(task, stack) + THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING;
+    return ((struct pt_regs *) __ptr) - 1;
+#elif defined(bpf_target_arm64)
+    return ((struct pt_regs *) (THREAD_SIZE + BPF_CORE_READ(task, stack)) - 1);
+#endif
+}
+
 statfunc struct pt_regs *get_current_task_pt_regs(void)
 {
     struct task_struct *task;
@@ -71,14 +87,7 @@ statfunc struct pt_regs *get_current_task_pt_regs(void)
 
     // Helper not available, extract registers manually
     task = (struct task_struct *) bpf_get_current_task();
-
-// THREAD_SIZE here is statistically defined and assumed to work for 4k page sizes.
-#if defined(bpf_target_x86)
-    void *__ptr = BPF_CORE_READ(task, stack) + THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING;
-    return ((struct pt_regs *) __ptr) - 1;
-#elif defined(bpf_target_arm64)
-    return ((struct pt_regs *) (THREAD_SIZE + BPF_CORE_READ(task, stack)) - 1);
-#endif
+    return get_task_pt_regs_manual(task);
 }
 
 #define UNDEFINED_SYSCALL 1000

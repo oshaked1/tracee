@@ -20,11 +20,12 @@ func (sig *signal) Unmarshal(buffer []byte) error {
 		return errfmt.Errorf("failed to decode signal event ID: %v", err)
 	}
 	sig.id = events.ID(eventIdUint32)
-	var argnum uint8
-	err = ebpfDecoder.DecodeUint8(&argnum)
+	var metadata uint32
+	err = ebpfDecoder.DecodeUint32(&metadata)
 	if err != nil {
-		return errfmt.Errorf("failed to decode signal argnum: %v", err)
+		return errfmt.Errorf("failed to decode signal args metadata: %v", err)
 	}
+	argnum := metadata & 0xff // least significant byte
 
 	if !events.Core.IsDefined(sig.id) {
 		return errfmt.Errorf("failed to get event %d configuration", sig.id)

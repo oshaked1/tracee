@@ -260,6 +260,7 @@ func (k *KernelSymbolTable) refresh() error {
 			if !symRequired && !addrRequired {
 				continue
 			}
+			//logger.Infow("symbol", "name", sym.Name, "addr", sym.Address, "symRequired", symRequired, "addrRequired", addrRequired)
 		}
 
 		k.symbols[sym.Name] = append(k.symbols[sym.Name], sym)

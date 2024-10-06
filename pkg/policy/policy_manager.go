@@ -172,6 +172,7 @@ func (m *Manager) selectMandatoryEvents() {
 	m.selectEvent(events.SchedProcessFork, newEventFlags())
 	m.selectEvent(events.SchedProcessExec, newEventFlags())
 	m.selectEvent(events.SchedProcessExit, newEventFlags())
+	m.selectEvent(events.SecurityBprmCheck, newEventFlags())
 
 	// Control Plane Events
 
