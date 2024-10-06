@@ -3,6 +3,8 @@ package utils
 import (
 	"encoding/binary"
 	"unsafe"
+
+	"github.com/spaolacci/murmur3"
 )
 
 // MurMurHash 3 x86 32-bit (https://en.wikipedia.org/wiki/MurmurHash): Small (u32), simple (for C
@@ -86,4 +88,13 @@ func HashTaskID(arg1 uint32, arg2 uint64) uint32 {
 	round := arg2 / 10000000 // (1000000000 / USER_HZ) = 10000000
 	round *= 10000000
 	return HashU32AndU64(arg1, round)
+}
+
+func HashFileID(dev uint32, ino uint64, mtime uint64) uint64 {
+	buffer := make([]byte, 0, 4+8+8)
+	buffer = binary.NativeEndian.AppendUint32(buffer, dev)
+	buffer = binary.NativeEndian.AppendUint64(buffer, ino)
+	buffer = binary.NativeEndian.AppendUint64(buffer, mtime)
+
+	return murmur3.Sum64WithSeed(buffer, murmurSeed)
 }

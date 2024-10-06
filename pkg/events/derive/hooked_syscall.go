@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	maxSysCallTableSize = 500
+	maxSysCallTableSize = 460 // TODO: this was 500 before but uprobe_syscall_table_check became too complex for the verifier. That program should be split using tail calls.
 )
 
 var (

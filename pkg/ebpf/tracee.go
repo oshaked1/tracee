@@ -27,6 +27,7 @@ import (
 	"github.com/aquasecurity/tracee/pkg/ebpf/controlplane"
 	"github.com/aquasecurity/tracee/pkg/ebpf/initialization"
 	"github.com/aquasecurity/tracee/pkg/ebpf/probes"
+	"github.com/aquasecurity/tracee/pkg/ebpf/stackunwind"
 	"github.com/aquasecurity/tracee/pkg/errfmt"
 	"github.com/aquasecurity/tracee/pkg/events"
 	"github.com/aquasecurity/tracee/pkg/events/dependencies"
@@ -84,8 +85,8 @@ type Tracee struct {
 	bpfModule *bpf.Module
 	probes    *probes.ProbeGroup
 	// BPF Maps
-	StackAddressesMap *bpf.BPFMap
-	FDArgPathMap      *bpf.BPFMap
+	KernelStacksMap *bpf.BPFMap
+	FDArgPathMap    *bpf.BPFMap
 	// Perf Buffers
 	eventsPerfMap  *bpf.PerfBuffer // perf buffer for events
 	fileWrPerfMap  *bpf.PerfBuffer // perf buffer for file writes
@@ -125,6 +126,8 @@ type Tracee struct {
 	// This does not mean they are required for tracee to function.
 	// TODO: remove this in favor of dependency manager nodes
 	requiredKsyms []string
+	// Stack unwind helper
+	stackUnwindManager *stackunwind.Manager
 }
 
 func (t *Tracee) Stats() *metrics.Stats {
@@ -483,14 +486,28 @@ func (t *Tracee) Init(ctx gocontext.Context) error {
 		return errfmt.Errorf("error initializing network capture: %v", err)
 	}
 
+	// Initialize stack unwind manager
+	if _, err := t.eventsDependencies.GetEvent(events.StackTrace); err == nil {
+		t.stackUnwindManager, err = stackunwind.NewManager(t.bpfModule, t.contPathResolver)
+		if err != nil {
+			return errfmt.Errorf("failed creating stack unwind manager: %v", err)
+		}
+
+		// Get reference to kernel stacks map
+		t.KernelStacksMap, err = t.bpfModule.GetMap("su_kern_stacks")
+		if err != nil {
+			return errfmt.Errorf("failed getting 'su_kern_stacks' map: %v", err)
+		}
+	}
+
 	// Get reference to stack trace addresses map
 
-	stackAddressesMap, err := t.bpfModule.GetMap("stack_addresses")
+	/*stackAddressesMap, err := t.bpfModule.GetMap("stack_addresses")
 	if err != nil {
 		t.Close()
 		return errfmt.Errorf("error getting access to 'stack_addresses' eBPF Map %v", err)
 	}
-	t.StackAddressesMap = stackAddressesMap
+	t.StackAddressesMap = stackAddressesMap*/
 
 	// Get reference to fd arg path map
 
@@ -1107,6 +1124,12 @@ func (t *Tracee) populateBPFMaps() error {
 		}
 	}
 
+	// Populate maps according to BPF-level event argument filters
+	err = t.populateEventFilterMaps()
+	if err != nil {
+		return errfmt.WrapError(err)
+	}
+
 	return nil
 }
 
@@ -1370,6 +1393,11 @@ func (t *Tracee) Run(ctx gocontext.Context) error {
 	t.controlPlane.Start()
 	go t.controlPlane.Run(ctx)
 
+	// Start stack unwind manager
+	if t.stackUnwindManager != nil {
+		go t.stackUnwindManager.Run(ctx)
+	}
+
 	// Main event loop (polling events perf buffer)
 
 	t.eventsPerfMap.Poll(pollTimeout)
@@ -1478,6 +1506,11 @@ func (t *Tracee) Close() {
 		err := t.controlPlane.Stop()
 		if err != nil {
 			logger.Errorw("failed to stop control plane when closing tracee", "err", err)
+		}
+	}
+	if t.stackUnwindManager != nil {
+		if err := t.stackUnwindManager.Stop(); err != nil {
+			logger.Errorw("failed to stop stack unwind manager when closing tracee", "err", err)
 		}
 	}
 	if t.probes != nil {

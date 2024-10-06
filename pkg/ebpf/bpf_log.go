@@ -31,6 +31,9 @@ const (
 
 	// hidden kernel module functions
 	BPFLogIDHidKerMod
+
+	// stack unwind functions
+	BPFLogIDStackUnwindLostEvent // BPF_LOG_ID_STACK_UNWIND_LOST_EVENT
 )
 
 var stringMap = map[BPFLogType]string{
@@ -49,6 +52,9 @@ var stringMap = map[BPFLogType]string{
 
 	// hidden kernel module functions
 	BPFLogIDHidKerMod: "BPF_LOG_ID_HID_KER_MOD",
+
+	// stack unwind functions
+	BPFLogIDStackUnwindLostEvent: "BPF_LOG_ID_STACK_UNWIND_LOST_EVENT",
 }
 
 var errorMap = map[BPFLogType]string{
@@ -67,6 +73,9 @@ var errorMap = map[BPFLogType]string{
 
 	// hidden kernel module functions
 	BPFLogIDHidKerMod: "Failure in hidden kernel module seeker logic",
+
+	// stack unwind functions
+	BPFLogIDStackUnwindLostEvent: "Event was lost between tail calls while creating a stack trace",
 }
 
 func (b BPFLogType) String() string {

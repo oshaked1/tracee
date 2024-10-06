@@ -113,6 +113,7 @@ const (
 	ProcessExecuteFailedInternal
 	SecurityTaskSetrlimit
 	SecuritySettime64
+	StackTrace // stack trace pseudo event
 	MaxCommonID
 )
 
@@ -11161,6 +11162,9 @@ var CoreEvents = map[ID]Definition{
 				{handle: probes.SchedProcessExec, required: true},
 				{handle: probes.LoadElfPhdrs, required: false},
 			},
+			ids: []ID{
+				ArchPrctl,
+			},
 			tailCalls: []TailCall{
 				{
 					"prog_array_tp",
@@ -13040,6 +13044,40 @@ var CoreEvents = map[ID]Definition{
 			{Type: "u64", Name: "tv_nsec"},
 			{Type: "int", Name: "tz_minuteswest"},
 			{Type: "int", Name: "tz_dsttime"},
+		},
+	},
+	StackTrace: {
+		id:      StackTrace,
+		id32Bit: Sys32Undefined,
+		name:    "stack_trace",
+		version: NewVersion(1, 0, 0),
+		//internal: true,
+		dependencies: Dependencies{
+			probes: []Probe{
+				{handle: probes.StackUnwindSysExecveRet, required: true},
+				{handle: probes.StackUnwindSysExecveatRet, required: true},
+				{handle: probes.StackUnwindMmapRegion, required: true},
+				{handle: probes.StackUnwindMmapRegionRet, required: true},
+				{handle: probes.StackUnwindSysMunmap, required: true},
+				{handle: probes.StackUnwindSchedProcessExit, required: true},
+				{handle: probes.ExecStackTrace, required: true}, // Stack traces for sched_process_exec need to be generated at an earilier point of execution
+			},
+			tailCalls: []TailCall{
+				{"su_tail_kp", "stack_unwind_kp", []uint32{uint32(StackTrace) /* Map will be populated at runtime according to event filter */}},
+				{"su_tail_tp", "stack_unwind_tp", []uint32{uint32(StackTrace) /* Map will be populated at runtime according to event filter */}},
+			},
+			capabilities: Capabilities{
+				base: []cap.Value{
+					cap.SYS_PTRACE,   // Needed to access ELF files for generating unwind info
+					cap.DAC_OVERRIDE, // Needed to access ELF files for generating unwind info
+					cap.BPF,          // Needed to read and write to eBPF maps used for unwind info management
+					cap.SYS_ADMIN,    // Needed to create inner maps for stack deltas
+					cap.SYS_RESOURCE, // Neeeded when creating maps (setting rlimit). TODO: check if we even need to set rlimit.
+				},
+			},
+		},
+		params: []trace.ArgMeta{
+			{Type: "const char*", Name: "events"}, // pseudo argument, only used for filtering
 		},
 	},
 	//

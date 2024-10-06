@@ -3,13 +3,10 @@ package ebpf
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"strconv"
+	"fmt"
 	"sync"
-	"unsafe"
 
 	"github.com/aquasecurity/tracee/pkg/bufferdecoder"
-	"github.com/aquasecurity/tracee/pkg/capabilities"
 	"github.com/aquasecurity/tracee/pkg/errfmt"
 	"github.com/aquasecurity/tracee/pkg/events"
 	"github.com/aquasecurity/tracee/pkg/logger"
@@ -170,11 +167,12 @@ func (t *Tracee) decodeEvents(ctx context.Context, sourceChan chan []byte) (<-ch
 				t.handleError(err)
 				continue
 			}
-			var argnum uint8
-			if err := ebpfMsgDecoder.DecodeUint8(&argnum); err != nil {
+			var metadata uint32
+			if err := ebpfMsgDecoder.DecodeUint32(&metadata); err != nil {
 				t.handleError(err)
 				continue
 			}
+			argnum := metadata & 0xff // least significant byte
 			eventId := events.ID(eCtx.EventID)
 			if !events.Core.IsDefined(eventId) {
 				t.handleError(errfmt.Errorf("failed to get configuration of event %d", eventId))
@@ -189,12 +187,22 @@ func (t *Tracee) decodeEvents(ctx context.Context, sourceChan chan []byte) (<-ch
 				t.handleError(err)
 				continue
 			}
+			var stackTrace *trace.StackTrace
+			if eCtx.HasStackTrace {
+				stackTraceRaw, err := ebpfMsgDecoder.DecodeStackTrace(t.KernelStacksMap, eCtx.UserStackError)
+				if err != nil {
+					t.handleError(fmt.Errorf("error decoding stack trace: %v", err))
+					continue
+				}
+
+				stackTrace = t.stackUnwindManager.ProcessStackTrace(stackTraceRaw)
+			}
 
 			// Add stack trace if needed
-			var stackAddresses []uint64
+			/*var stackAddresses []uint64
 			if t.config.Output.StackAddresses {
 				stackAddresses = t.getStackAddresses(eCtx.StackID)
-			}
+			}*/
 
 			containerInfo := t.containers.GetCgroupInfo(eCtx.CgroupID).Container
 			containerData := trace.Container{
@@ -261,7 +269,8 @@ func (t *Tracee) decodeEvents(ctx context.Context, sourceChan chan []byte) (<-ch
 			evt.ArgsNum = int(argnum)
 			evt.ReturnValue = int(eCtx.Retval)
 			evt.Args = args
-			evt.StackAddresses = stackAddresses
+			//evt.StackAddresses = stackAddresses
+			evt.StackTrace = stackTrace
 			evt.ContextFlags = flags
 			evt.Syscall = syscall
 			evt.Metadata = nil
@@ -637,7 +646,7 @@ func (t *Tracee) sinkEvents(ctx context.Context, in <-chan *trace.Event) <-chan 
 	return errc
 }
 
-// getStackAddresses returns the stack addresses for a given StackID
+/*// getStackAddresses returns the stack addresses for a given StackID
 func (t *Tracee) getStackAddresses(stackID uint32) []uint64 {
 	stackAddresses := make([]uint64, maxStackDepth)
 	stackFrameSize := (strconv.IntSize / 8)
@@ -679,7 +688,7 @@ func (t *Tracee) getStackAddresses(stackID uint32) []uint64 {
 	}
 
 	return stackAddresses[0:stackCounter]
-}
+}*/
 
 // WaitForPipeline waits for results from all error channels.
 func (t *Tracee) WaitForPipeline(errs ...<-chan error) error {

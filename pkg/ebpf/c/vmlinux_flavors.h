@@ -97,6 +97,7 @@ struct module___older_v64 {
 
 // kernel >= v6.6 inode i_ctime field change
 struct inode___older_v66 {
+    struct timespec64 i_mtime;
     struct timespec64 i_ctime;
 };
 
