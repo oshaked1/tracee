@@ -264,6 +264,8 @@ statfunc bool reset_event(event_data_t *event, u32 event_id)
     event->config.param_types = event_config->param_types;
     event->config.submit_for_policies = event_config->submit_for_policies;
     event->context.matched_policies = event_config->submit_for_policies;
+    event->context.has_stack_trace = false;
+    event->context.stack_unwind_error = ERR_OK;
 
     return true;
 }

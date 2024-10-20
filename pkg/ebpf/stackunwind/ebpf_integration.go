@@ -264,8 +264,8 @@ func getEBPFHandler(bpfModule *libbpfgo.Module, tracers types.IncludedTracers) (
 		impl.hasLPMTrieBatchOperations = true
 	}
 
-	if err := populateUnwinderTails(bpfModule, tracers); err != nil {
-		return nil, fmt.Errorf("failed to populate stack unwinder program tail calls: %v", err)
+	if err := populateUnwinders(bpfModule, tracers); err != nil {
+		return nil, fmt.Errorf("failed to populate stack unwind unwinders: %v", err)
 	}
 
 	return impl, nil
@@ -277,87 +277,66 @@ type unwinder struct {
 	enabled  bool
 }
 
-func populateUnwinderTails(bpfMoudle *libbpfgo.Module, tracers types.IncludedTracers) error {
+func populateUnwinders(bpfMoudle *libbpfgo.Module, tracers types.IncludedTracers) error {
 	enabledUnwindersMap, err := bpfMoudle.GetMap("su_enbld_unwnd")
 	if err != nil {
 		return err
 	}
 
-	for _, progTypeSuffix := range []string{"kp", "tp"} {
-		tailMap, err := bpfMoudle.GetMap(fmt.Sprintf("su_progs_%s", progTypeSuffix))
-		if err != nil {
-			return err
-		}
+	unwinders := []unwinder{
+		{
+			id:       uint32(support.ProgUnwindStop),
+			progName: "stack_unwind_stop",
+			enabled:  true,
+		},
+		{
+			id:       uint32(support.ProgUnwindNative),
+			progName: "stack_unwind_native",
+			enabled:  true,
+		},
+		{
+			id:       uint32(support.ProgUnwindHotspot),
+			progName: "stack_unwind_hotspot",
+			enabled:  tracers.Has(types.HotspotTracer),
+		},
+		{
+			id:       uint32(support.ProgUnwindPerl),
+			progName: "stack_unwind_perl",
+			enabled:  tracers.Has(types.PerlTracer),
+		},
+		{
+			id:       uint32(support.ProgUnwindPHP),
+			progName: "stack_unwind_php",
+			enabled:  tracers.Has(types.PHPTracer),
+		},
+		{
+			id:       uint32(support.ProgUnwindPython),
+			progName: "stack_unwind_python",
+			enabled:  tracers.Has(types.PythonTracer),
+		},
+		{
+			id:       uint32(support.ProgUnwindRuby),
+			progName: "stack_unwind_ruby",
+			enabled:  tracers.Has(types.RubyTracer),
+		},
+		{
+			id:       uint32(support.ProgUnwindV8),
+			progName: "stack_unwind_v8",
+			enabled:  tracers.Has(types.V8Tracer),
+		},
+		{
+			id:       uint32(support.ProgUnwindDotnet),
+			progName: "stack_unwind_dotnet",
+			enabled:  tracers.Has(types.DotnetTracer),
+		},
+	}
 
-		for _, unwinder := range []unwinder{
-			{
-				id:       uint32(support.ProgUnwindStop),
-				progName: "stack_unwind_stop",
-				enabled:  true,
-			},
-			{
-				id:       uint32(support.ProgUnwindNative),
-				progName: "stack_unwind_native",
-				enabled:  true,
-			},
-			{
-				id:       uint32(support.ProgUnwindHotspot),
-				progName: "stack_unwind_hotspot",
-				enabled:  tracers.Has(types.HotspotTracer),
-			},
-			{
-				id:       uint32(support.ProgUnwindPerl),
-				progName: "stack_unwind_perl",
-				enabled:  tracers.Has(types.PerlTracer),
-			},
-			{
-				id:       uint32(support.ProgUnwindPHP),
-				progName: "stack_unwind_php",
-				enabled:  tracers.Has(types.PHPTracer),
-			},
-			{
-				id:       uint32(support.ProgUnwindPython),
-				progName: "stack_unwind_python",
-				enabled:  tracers.Has(types.PythonTracer),
-			},
-			{
-				id:       uint32(support.ProgUnwindRuby),
-				progName: "stack_unwind_ruby",
-				enabled:  tracers.Has(types.RubyTracer),
-			},
-			{
-				id:       uint32(support.ProgUnwindV8),
-				progName: "stack_unwind_v8",
-				enabled:  tracers.Has(types.V8Tracer),
-			},
-			{
-				id:       uint32(support.ProgUnwindDotnet),
-				progName: "stack_unwind_dotnet",
-				enabled:  tracers.Has(types.DotnetTracer),
-			},
-		} {
-			if !unwinder.enabled {
-				continue
-			}
-
-			fullProgName := fmt.Sprintf("%s_%s", unwinder.progName, progTypeSuffix)
-
-			// update enabled unwinders map
+	// update enabled unwinders map
+	for _, unwinder := range unwinders {
+		if unwinder.enabled {
 			trueVal := uint32(1)
 			if err := enabledUnwindersMap.Update(unsafe.Pointer(&unwinder.id), unsafe.Pointer(&trueVal)); err != nil {
-				return fmt.Errorf("failed to update enabled unwinders map with unwinder %s (%d): %v", fullProgName, unwinder.id, err)
-			}
-
-			// update unwinder tail call maps
-			prog, err := bpfMoudle.GetProgram(fullProgName)
-			if err != nil {
-				return err
-			}
-			fd := uint32(prog.FileDescriptor())
-
-			err = tailMap.Update(unsafe.Pointer(&unwinder.id), unsafe.Pointer(&fd))
-			if err != nil {
-				return fmt.Errorf("failed to update unwinder tail map %s with unwinder %s (%d): %v", tailMap.Name(), fullProgName, unwinder.id, err)
+				return fmt.Errorf("failed to update enabled unwinders map with unwinder %s (%d): %v", unwinder.progName, unwinder.id, err)
 			}
 		}
 	}
