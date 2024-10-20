@@ -1,3 +1,6 @@
+#ifndef __STACK_UNWIND_NATIVE_H__
+#define __STACK_UNWIND_NATIVE_H__
+
 #include <bpf/bpf_helpers.h>
 #include "types.h"
 
@@ -7,20 +10,13 @@
 #define __USER32_CS (GDT_ENTRY_DEFAULT_USER32_CS*8 + 3)
 #endif
 
-// The number of native frames to unwind per frame-unwinding eBPF program.
-#ifdef STACK_UNWIND_DEBUG
-#define NATIVE_FRAMES_PER_PROGRAM 22
-#else
-#define NATIVE_FRAMES_PER_PROGRAM 20
-#endif
-
 //
 // Prototypes
 //
 
 statfunc ErrorCode copy_state_regs(NativeUnwindState *state, struct pt_regs *regs, bool interrupted_kernel);
-statfunc void unwind_native(void *ctx, stack_unwind_state_t *state, StackTrace *trace, enum bpf_prog_type prog_type);
-statfunc void unwind_start(void *ctx, stack_unwind_state_t *state, StackTrace *trace, enum bpf_prog_type prog_type);
+statfunc int unwind_native(stack_unwind_state_t *state, StackTrace *trace);
+statfunc void unwind_start(stack_unwind_state_t *state, StackTrace *trace);
 
 //
 // Maps
@@ -381,7 +377,6 @@ statfunc ErrorCode unwind_one_frame(u32 frame_idx, NativeUnwindState *state, boo
     *stop = false;
 
     u32 unwindInfo = 0;
-    u64 rt_regs[18];
     int addrDiff = 0;
     u64 cfa = 0;
 
@@ -392,6 +387,7 @@ statfunc ErrorCode unwind_one_frame(u32 frame_idx, NativeUnwindState *state, boo
         return error;
 
     if (unwindInfo & STACK_DELTA_COMMAND_FLAG) {
+        u64 rt_regs[18];
         switch (unwindInfo & ~STACK_DELTA_COMMAND_FLAG) {
             case UNWIND_COMMAND_PLT:
                 // The toolchains routinely emit a fixed DWARF expression to unwind the full
@@ -581,51 +577,31 @@ frame_ok:
 #error unsupported architecture
 #endif
 
-statfunc void unwind_native(void *ctx, stack_unwind_state_t *state, StackTrace *trace, enum bpf_prog_type prog_type)
+statfunc int unwind_native(stack_unwind_state_t *state, StackTrace *trace)
 {
-    int unwinder;
-    ErrorCode error;
+    // Unwind native code
+    DEBUG_PRINT("==== unwind_native %d ====", trace->metadata.stack_len);
 
-#pragma unroll
-    for (int i = 0; i < NATIVE_FRAMES_PER_PROGRAM; i++) {
-        unwinder = PROG_UNWIND_STOP;
-
-        // Unwind native code
-        u32 frame_idx = trace->metadata.stack_len;
-        DEBUG_PRINT("==== unwind_native %d ====", frame_idx);
-
-        // Push frame first. The PC is valid because a text section mapping was found.
-        DEBUG_PRINT("Pushing %llx %llx to position %u on stack",
-                    state->native_state.text_section_id, state->native_state.text_section_offset,
-                    trace->metadata.stack_len);
-        error = push_native(trace, state->native_state.pc, state->native_state.text_section_id, state->native_state.text_section_offset,
-            state->native_state.return_address);
-        if (error) {
-            DEBUG_PRINT("failed to push native frame");
-            break;
-        }
-
-        // Unwind the native frame using stack deltas. Stop if no next frame.
-        bool stop;
-        error = unwind_one_frame(frame_idx, &state->native_state, &stop);
-        if (error || stop)
-            break;
-        
-        // Continue unwinding
-        DEBUG_PRINT(" pc: %llx sp: %llx fp: %llx", state->native_state.pc, state->native_state.sp, state->native_state.fp);
-        error = get_next_unwinder_after_native_frame(state, trace, &unwinder);
-        if (error || unwinder != PROG_UNWIND_NATIVE)
-            break;
+    // Push frame first. The PC is valid because a text section mapping was found.
+    DEBUG_PRINT("Pushing %llx %llx to position %u on stack",
+                state->native_state.text_section_id, state->native_state.text_section_offset,
+                trace->metadata.stack_len);
+    state->unwind_error = push_native(trace, state->native_state.pc, state->native_state.text_section_id, state->native_state.text_section_offset,
+        state->native_state.return_address);
+    if (state->unwind_error) {
+        DEBUG_PRINT("failed to push native frame");
+        return PROG_UNWIND_STOP;
     }
 
-    // Tail call needed for recursion, switching to interpreter unwinder, or reporting
-    // trace due to end-of-trace or error. The unwinder program index is set accordingly.
-    state->unwind_error = error;
-    error = unwind_tail_call(ctx, unwinder, prog_type);
-    DEBUG_PRINT("tail call failed for %d in unwind_native: %u", unwinder, error);
-
-    // if the tail call failed, override any previous error
-    state->unwind_error = error;
+    // Unwind the native frame using stack deltas. Stop if no next frame.
+    bool stop;
+    state->unwind_error = unwind_one_frame(trace->metadata.stack_len, &state->native_state, &stop);
+    if (state->unwind_error || stop)
+        return PROG_UNWIND_STOP;
+    
+    // Continue unwinding
+    DEBUG_PRINT(" pc: %llx sp: %llx fp: %llx", state->native_state.pc, state->native_state.sp, state->native_state.fp);
+    return PROG_UNWIND_NATIVE;
 }
 
 statfunc ErrorCode copy_state_regs(NativeUnwindState *state, struct pt_regs *regs, bool interrupted_kernel)
@@ -671,17 +647,9 @@ statfunc ErrorCode copy_state_regs(NativeUnwindState *state, struct pt_regs *reg
   return ERR_OK;
 }
 
-statfunc void unwind_start(void *ctx, stack_unwind_state_t *state, StackTrace *trace, enum bpf_prog_type prog_type)
+statfunc void unwind_start(stack_unwind_state_t *state, StackTrace *trace)
 {   
     ErrorCode error = ERR_OK;
-    int unwinder = PROG_UNWIND_STOP;
-
-    // Get the kernel stack trace first
-    // TODO: stacks with the same ID may result in a race condition where the stack is cleared from user space
-    // after another event reuses the ID, so the stack is not available to user space when processing the second event.
-    // To get around this we should probably use `bpf_get_stack` and save it to the event buffer.
-    trace->metadata.kernel_stack_id = bpf_get_stackid(ctx, &su_kern_stacks, BPF_F_REUSE_STACKID);
-    DEBUG_PRINT("kernel stack id = %d", trace->metadata.kernel_stack_id);
 
     // not in task context
     if ((bpf_get_current_pid_tgid() >> 32) == 0) {
@@ -712,13 +680,8 @@ statfunc void unwind_start(void *ctx, stack_unwind_state_t *state, StackTrace *t
         goto exit;
     }
 
-    error = get_next_unwinder_after_native_frame(state, trace, &unwinder);
-
 exit:
     state->unwind_error = error;
-    error = unwind_tail_call(ctx, unwinder, prog_type);
-    DEBUG_PRINT("tail call failed for %d in unwind_start: %u", unwinder, error);
-
-    // if the tail call failed, override any previous error
-    state->unwind_error = error;
 }
+
+#endif /* __STACK_UNWIND_NATIVE_H__ */

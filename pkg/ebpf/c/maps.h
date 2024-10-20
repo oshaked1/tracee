@@ -384,6 +384,14 @@ struct scratch_map {
 
 typedef struct scratch_map scratch_map_t;
 
+// temporary storage for file_info_t to avoid allocating it on the stack
+struct file_info_tmp_storage {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, file_info_t);
+} file_info_tmp_storage SEC(".maps");
+
 // hold file data to decide if should submit file modification event
 struct file_modification_map {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);

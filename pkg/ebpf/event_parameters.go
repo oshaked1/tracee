@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"unsafe"
 
-	bpf "github.com/aquasecurity/libbpfgo"
 	"github.com/aquasecurity/tracee/pkg/ebpf/probes"
 	"github.com/aquasecurity/tracee/pkg/errfmt"
 	"github.com/aquasecurity/tracee/pkg/events"
@@ -192,14 +191,6 @@ func populateMapsStackTrace(t *Tracee, eventParams []map[string]filters.Filter[*
 
 	logger.Debugw("stack traces are enabled", "selected events", selectedEvents)
 
-	// Update tail call maps
-	if err := updateStackTraceTailCalls(t.bpfModule, "su_tail_kp", "stack_unwind_kp", selectedEvents); err != nil {
-		return err
-	}
-	if err := updateStackTraceTailCalls(t.bpfModule, "su_tail_tp", "stack_unwind_tp", selectedEvents); err != nil {
-		return err
-	}
-
 	// Update selected events map
 	eventsMap, err := t.bpfModule.GetMap("su_enabled_evts")
 	if err != nil {
@@ -213,35 +204,6 @@ func populateMapsStackTrace(t *Tracee, eventParams []map[string]filters.Filter[*
 		val := uint32(1)
 		if err = eventsMap.Update(unsafe.Pointer(&eventID), unsafe.Pointer(&val)); err != nil {
 			return errfmt.Errorf("failed updating stack unwind events map: %v", err)
-		}
-	}
-
-	return nil
-}
-
-func updateStackTraceTailCalls(bpfModule *bpf.Module, mapName string, progName string, selectedEvents []string) error {
-	tailMap, err := bpfModule.GetMap(mapName)
-	if err != nil {
-		return errfmt.Errorf("could not get BPF map '%s': %v", mapName, err)
-	}
-	prog, err := bpfModule.GetProgram(progName)
-	if err != nil {
-		return errfmt.Errorf("could not get BPF program '%s': %v", progName, err)
-	}
-	progFD := uint32(prog.FileDescriptor())
-	if progFD < 0 {
-		return errfmt.Errorf("could not get BPF program FD for '%s': %v", progName, err)
-	}
-
-	// Add each event to the tail call map
-	for _, event := range selectedEvents {
-		eventID, found := events.Core.GetDefinitionIDByName(event)
-		if !found {
-			return errfmt.Errorf("invalid event %s", event)
-		}
-
-		if err := tailMap.Update(unsafe.Pointer(&eventID), unsafe.Pointer(&progFD)); err != nil {
-			return errfmt.Errorf("failed updating tail call map %s: %v", mapName, err)
 		}
 	}
 

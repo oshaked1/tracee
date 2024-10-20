@@ -13113,10 +13113,6 @@ var CoreEvents = map[ID]Definition{
 				{handle: probes.StackUnwindSchedProcessExit, required: true},
 				{handle: probes.ExecStackTrace, required: true}, // Stack traces for sched_process_exec need to be generated at an earilier point of execution
 			},
-			tailCalls: []TailCall{
-				{"su_tail_kp", "stack_unwind_kp", []uint32{uint32(StackTrace) /* Map will be populated at runtime according to event filter */}},
-				{"su_tail_tp", "stack_unwind_tp", []uint32{uint32(StackTrace) /* Map will be populated at runtime according to event filter */}},
-			},
 			capabilities: Capabilities{
 				base: []cap.Value{
 					cap.SYS_PTRACE,   // Needed to access ELF files for generating unwind info

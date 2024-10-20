@@ -517,8 +517,8 @@ typedef struct program_data {
     proc_info_t *proc_info;
     event_data_t *event;
     u32 scratch_idx;
-    void *ctx;
     enum bpf_prog_type prog_type;
+    void *ctx;
 } program_data_t;
 
 // For a good summary about capabilities, see https://lwn.net/Articles/636533/

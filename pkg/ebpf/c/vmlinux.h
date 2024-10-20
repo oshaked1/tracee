@@ -1153,6 +1153,14 @@ enum {
 	BPF_F_USER_BUILD_ID   = (1ULL << 11),
 };
 
+/* BPF numbers iterator state */
+struct bpf_iter_num {
+	/* opaque iterator state; having __u64 here allows to preserve correct
+	 * alignment requirements in vmlinux.h, generated from BTF
+	 */
+	__u64 __opaque[1];
+} __attribute__((aligned(8)));
+
 struct bpf_prog_aux {
     u32 id;
     char name[BPF_OBJ_NAME_LEN];

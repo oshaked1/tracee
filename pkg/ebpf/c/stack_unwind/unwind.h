@@ -4,8 +4,7 @@
 #include <bpf/bpf_helpers.h>
 
 #include "tracemgmt.h"
-
-#define MAX_CONCURRENT_STACK_UNWINDS 128
+#include "native.h"
 
 #define E2BIG 7
 
@@ -16,26 +15,13 @@
 statfunc bool stack_trace_selected_for_event(u32 event_id);
 statfunc bool stack_trace_selected_for_scope(void *ctx);
 statfunc void generate_stack_trace(program_data_t *p);
-statfunc event_data_t *get_saved_event(void *ctx);
 statfunc StackTrace *get_stack_trace_from_event(event_data_t *event);
 statfunc stack_unwind_state_t *get_stack_unwind_state(StackTrace *trace, bool interrupted_kernel);
-statfunc void delete_saved_event(void);
-statfunc void delete_stack_unwind_state(void);
 statfunc void apply_saved_stack_trace(program_data_t *p);
 
 //
 // Maps
 //
-
-struct stack_unwind_tail {
-    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, MAX_EVENT_ID);
-    __type(key, u32);
-    __type(value, u32);
-};
-
-struct stack_unwind_tail su_tail_kp SEC(".maps");
-struct stack_unwind_tail su_tail_tp SEC(".maps");
 
 struct stack_unwind_enabled_events {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -43,20 +29,6 @@ struct stack_unwind_enabled_events {
     __type(key, u32);
     __type(value, u32);
 } su_enabled_evts SEC(".maps");
-
-struct stack_unwind_saved_events {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_CONCURRENT_STACK_UNWINDS);
-    __type(key, pid_t);
-    __type(value, event_data_t);
-} su_saved_evts SEC(".maps");
-
-struct stack_unwind_state_map {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_CONCURRENT_STACK_UNWINDS);
-    __type(key, pid_t);
-    __type(value, stack_unwind_state_t);
-} su_state SEC(".maps");
 
 struct stack_unwind_state_tmp_storage {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -83,50 +55,72 @@ statfunc bool stack_trace_selected_for_event(u32 event_id)
 
 statfunc void generate_stack_trace(program_data_t *p)
 {
-    // save event data
-    pid_t pid = bpf_get_current_pid_tgid();
-    int ret = (int) bpf_map_update_elem(&su_saved_evts, &pid, p->event, BPF_NOEXIST);
-    if (ret == -E2BIG) {
-        // map full (reached maximum number of concurrent stack unwinds)
-        p->event->context.stack_unwind_error = ERR_MAX_CONCURRENT;
+    StackTrace *trace;
+    stack_unwind_state_t *state;
+
+    trace = get_stack_trace_from_event(p->event);
+    if (trace == NULL)
+        return;
+    
+    init_stack_trace(trace);
+    p->event->context.has_stack_trace = true;
+
+    // Get the kernel stack trace
+    // TODO: stacks with the same ID may result in a race condition where the stack is cleared from user space
+    // after another event reuses the ID, so the stack is not available to user space when processing the second event.
+    // To get around this we should probably use `bpf_get_stack` and save it to the event buffer.
+    trace->metadata.kernel_stack_id = bpf_get_stackid(p->ctx, &su_kern_stacks, BPF_F_REUSE_STACKID);
+    DEBUG_PRINT("kernel stack id = %d", trace->metadata.kernel_stack_id);
+
+    if (!bpf_core_type_exists(struct bpf_iter_num)) {
+        p->event->context.stack_unwind_error = ERR_BPF_ITER_NUM_MISSING;
         return;
     }
-    else if (ret != 0) {
-        // unexpected error
-        DEBUG_PRINT("can't save event data");
+
+    // Get stack unwind state
+    state = get_stack_unwind_state(trace, true /* TODO: set this to false for uprobes */);
+    if (unlikely(state == NULL)) {
         p->event->context.stack_unwind_error = ERR_UNKNOWN;
         return;
     }
-    
-    // tail call into unwinder program according to program type
-    switch (p->prog_type) {
-        // krpobe, kretprobe, uprobe
-        case BPF_PROG_TYPE_KPROBE:
-            bpf_tail_call(p->ctx, &su_tail_kp, p->event->context.eventid);
-            break;
-        case BPF_PROG_TYPE_RAW_TRACEPOINT:
-            bpf_tail_call(p->ctx, &su_tail_tp, p->event->context.eventid);
-            break;
-        default:
-            p->event->context.stack_unwind_error = ERR_INVALID_PROGRAM_TYPE;
-            return;
+
+    // Prepare stack unwinding
+    unwind_start(state, trace);
+    int unwinder;
+    state->unwind_error = get_next_unwinder_after_native_frame(state, trace, &unwinder);
+
+    // Unwind the stack, one frame per iteration.
+    // The exit condition is when unwinder == PROG_UNWIND_STOP.
+    struct bpf_iter_num it;
+    bpf_iter_num_new(&it, 0, MAX_FRAME_UNWINDS);
+    int *i;
+
+    while ((i = bpf_iter_num_next(&it)) != NULL) {
+        // Using any kind of control flow modifications like break, continue, goto or even modifying
+        // the loop condition results in the complete inability of the verifier to accept this loop.
+        // As a workaround, we continue iterating and doing nothing when the exit condition is met.
+        if (unwinder == PROG_UNWIND_STOP) {}
+        // Previous frame had an error
+        else if (state->unwind_error != ERR_OK)
+            unwinder = PROG_UNWIND_STOP;
+        // Unwind native frame
+        else if (unwinder == PROG_UNWIND_NATIVE) {
+            unwinder = unwind_native(state, trace);
+            
+            // This isn't the last frame, get the next unwinder
+            if (unwinder != PROG_UNWIND_STOP)
+                state->unwind_error = get_next_unwinder_after_native_frame(state, trace, &unwinder);
+        }
+        // Invalid unwinder
+        else {
+            bpf_printk("invalid unwinder %d", unwinder);
+            unwinder = PROG_UNWIND_STOP;
+        }
     }
 
-    // if we reached this point then the tail call failed
-    DEBUG_PRINT("failed tail call to unwind program");
-    p->event->context.stack_unwind_error = ERR_UNKNOWN;
-}
+    bpf_iter_num_destroy(&it);
 
-statfunc event_data_t *get_saved_event(void *ctx)
-{
-    pid_t pid = bpf_get_current_pid_tgid();
-    event_data_t *event = (event_data_t *) bpf_map_lookup_elem(&su_saved_evts, &pid);
-
-    // the event was lost somehow o_o
-    if (unlikely(event == NULL))
-        tracee_log(ctx, BPF_LOG_LVL_ERROR, BPF_LOG_ID_STACK_UNWIND_LOST_EVENT, 0);
-
-    return event;
+    p->event->context.stack_unwind_error = state->unwind_error;
 }
 
 // Retrieve the StackTrace data structure from an event.
@@ -152,11 +146,6 @@ statfunc StackTrace *get_stack_trace_from_event(event_data_t *event)
 statfunc stack_unwind_state_t *get_stack_unwind_state(StackTrace *trace, bool interrupted_kernel)
 {
     stack_unwind_state_t *state;
-
-    // try getting an existing unwind state
-    pid_t tid = bpf_get_current_pid_tgid();
-    if ((state = (stack_unwind_state_t *) bpf_map_lookup_elem(&su_state, &tid)) != NULL)
-        return state;
     
     // no existing state, create a new one
     u32 zero = 0;
@@ -164,30 +153,9 @@ statfunc stack_unwind_state_t *get_stack_unwind_state(StackTrace *trace, bool in
         return NULL;
     
     // reset the state
-    init_stack_trace(trace);
     init_unwind_state(state, interrupted_kernel);
     
-    // update the states map with the newly created state
-    if (unlikely(bpf_map_update_elem(&su_state, &tid, state, BPF_NOEXIST)) != 0)
-        return NULL;
-    
-    // return the copy from the from the states map that we just inserted
-    if (unlikely(((state = bpf_map_lookup_elem(&su_state, &tid))) == NULL))
-        return NULL;
-    
     return state;
-}
-
-statfunc void delete_saved_event(void)
-{
-    u32 pid = bpf_get_current_pid_tgid();
-    bpf_map_delete_elem(&su_saved_evts, &pid);
-}
-
-statfunc void delete_stack_unwind_state(void)
-{
-    u32 pid = bpf_get_current_pid_tgid();
-    bpf_map_delete_elem(&su_state, &pid);
 }
 
 statfunc void save_stack_trace_event(event_data_t *event)
@@ -250,32 +218,5 @@ statfunc void apply_saved_stack_trace(program_data_t *p)
     p->event->context.has_stack_trace = true;
     p->event->context.stack_unwind_error = stack_trace_event->context.stack_unwind_error;
 }
-
-#define stack_unwind_step(ctx, func, prog_type, interrupted_kernel) ({                          \
-    event_data_t *event = get_saved_event(ctx);                                                 \
-    if (likely(event != NULL)) {                                                                \
-        event->context.has_stack_trace = true;                                                  \
-        StackTrace *trace = get_stack_trace_from_event(event);                                  \
-        if (likely(trace != NULL)) {                                                            \
-            stack_unwind_state_t *state = get_stack_unwind_state(trace, interrupted_kernel);    \
-            if (likely(state != NULL)) {                                                        \
-                /* this should tail call into the next unwinder or the unwind stop program */   \
-                func(ctx, state, trace, prog_type);                                             \
-                                                                                                \
-                /* if we reached this point, then the stack trace failed, finalize the trace */ \
-                unwind_stop(ctx, state, trace, prog_type);                                      \
-                event->context.stack_unwind_error = state->unwind_error;                        \
-            }                                                                                   \
-        }                                                                                       \
-        /* Delete the saved state, and submit the event. */                                     \
-        delete_saved_event();                                                                   \
-        delete_stack_unwind_state();                                                            \
-        if (event->context.eventid == STACK_TRACE)                                              \
-            /* stack trace pseudo event, save it until another event picks it up */             \
-            save_stack_trace_event(event);                                                      \
-        else                                                                                    \
-            do_submit_event(ctx, event);                                                        \
-    }                                                                                           \
-})
 
 #endif /* __STACK_UNWIND_H__ */
