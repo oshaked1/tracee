@@ -868,7 +868,7 @@ void __always_inline lkm_seeker_send_to_userspace(struct module *mod, u32 *flags
                       MODULE_SRCVERSION_MAX_LENGTH & MAX_MEM_DUMP_SIZE,
                       3); // string saved as bytes (verifier issues).
 
-    events_perf_submit(p, 0);
+    do_events_perf_submit(p, 0, true); // TODO: don't disable stack trace if called from init_module
 }
 
 // Populate all the modules to an efficient query-able hash map.
@@ -1728,7 +1728,7 @@ statfunc void syscall_table_check(program_data_t *p)
         save_to_submit_buf(&(p->event->args_buf), &index, sizeof(int), 0);
         save_to_submit_buf(&(p->event->args_buf), &effective_address, sizeof(u64), 1);
 
-        events_perf_submit(p, 0);
+        do_events_perf_submit(p, 0, true);
     }
 }
 
@@ -3508,11 +3508,11 @@ int BPF_KPROBE(kernel_write_magic_return)
         save_to_submit_buf(event, &len, sizeof(size_t), 2);                                        \
         save_to_submit_buf(event, &prot, sizeof(int), 3);                                          \
         save_to_submit_buf(event, &previous_prot, sizeof(int), 4);                                 \
-        if (file_info.pathname_p != NULL) {                                                        \
-            save_str_to_buf(event, file_info.pathname_p, 5);                                       \
-            save_to_submit_buf(event, &file_info.id.device, sizeof(dev_t), 6);                     \
-            save_to_submit_buf(event, &file_info.id.inode, sizeof(unsigned long), 7);              \
-            save_to_submit_buf(event, &file_info.id.ctime, sizeof(u64), 8);                        \
+        if (file_info->pathname_p != NULL) {                                                        \
+            save_str_to_buf(event, file_info->pathname_p, 5);                                       \
+            save_to_submit_buf(event, &file_info->id.device, sizeof(dev_t), 6);                     \
+            save_to_submit_buf(event, &file_info->id.inode, sizeof(unsigned long), 7);              \
+            save_to_submit_buf(event, &file_info->id.ctime, sizeof(u64), 8);                        \
         }                                                                                          \
         events_perf_submit(&p, 0);                                                                 \
     }
@@ -3543,8 +3543,9 @@ int BPF_KPROBE(trace_mmap_alert)
             struct file *file = get_struct_file_from_fd(fd);
             file_info = get_file_info(file);
         }
+        file_info_t *file_info_ptr = (file_info_t *) &file_info;
         submit_mem_prot_alert_event(
-            &p.event->args_buf, alert, addr, len, prot, prev_prot, file_info);
+            &p.event->args_buf, alert, addr, len, prot, prev_prot, file_info_ptr);
     }
 
     return 0;
@@ -3666,9 +3667,7 @@ int BPF_KPROBE(trace_security_mmap_file)
 SEC("kprobe/security_file_mprotect")
 int BPF_KPROBE(trace_security_file_mprotect)
 {
-    bin_args_t bin_args = {};
-    file_info_t file_info;
-    file_info.id.inode = 0;
+    file_info_t *file_info = NULL;
 
     program_data_t p = {};
     if (!init_program_data(&p, ctx, SECURITY_FILE_MPROTECT))
@@ -3688,11 +3687,15 @@ int BPF_KPROBE(trace_security_file_mprotect)
     size_t len = get_syscall_arg2(p.event->task, task_regs, false);
 
     if (evaluate_scope_filters(&p)) {
-        file_info = get_file_info(file);
+        u32 zero = 0;
+        file_info = bpf_map_lookup_elem(&file_info_tmp_storage, &zero);
+        if (unlikely(file_info == NULL))
+            return 0;
+        *file_info = get_file_info(file);
 
-        save_str_to_buf(&p.event->args_buf, file_info.pathname_p, 0);
+        save_str_to_buf(&p.event->args_buf, file_info->pathname_p, 0);
         save_to_submit_buf(&p.event->args_buf, &reqprot, sizeof(int), 1);
-        save_to_submit_buf(&p.event->args_buf, &file_info.id.ctime, sizeof(u64), 2);
+        save_to_submit_buf(&p.event->args_buf, &file_info->id.ctime, sizeof(u64), 2);
         save_to_submit_buf(&p.event->args_buf, &prev_prot, sizeof(int), 3);
         save_to_submit_buf(&p.event->args_buf, &addr, sizeof(void *), 4);
         save_to_submit_buf(&p.event->args_buf, &len, sizeof(size_t), 5);
@@ -3712,8 +3715,13 @@ int BPF_KPROBE(trace_security_file_mprotect)
         return 0;
 
     // only get file info if it wasn't already initialized
-    if (!file_info.id.inode)
-        file_info = get_file_info(file);
+    if (file_info == NULL) {
+        u32 zero = 0;
+        file_info = bpf_map_lookup_elem(&file_info_tmp_storage, &zero);
+        if (unlikely(file_info == NULL))
+            return 0;
+        *file_info = get_file_info(file);
+    }
 
     if (addr <= 0)
         return 0;
@@ -3750,6 +3758,7 @@ int BPF_KPROBE(trace_security_file_mprotect)
             &p.event->args_buf, alert, addr, len, reqprot, prev_prot, file_info);
 
     if (should_extract_code) {
+        bin_args_t bin_args = {};
         u32 pid = p.event->context.task.host_pid;
         bin_args.type = SEND_MPROTECT;
         bpf_probe_read_kernel(bin_args.metadata, sizeof(u64), &p.event->context.ts);
@@ -7262,48 +7271,6 @@ int sched_process_exit_stack_unwind(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-SEC("kprobe/stack_unwind")
-int BPF_KPROBE(stack_unwind_kp)
-{
-    stack_unwind_step(ctx, unwind_start, BPF_PROG_TYPE_KPROBE, true);
-    return 0;
-}
-
-SEC("raw_tracepoint/stack_unwind")
-int stack_unwind_tp(struct bpf_raw_tracepoint_args *ctx)
-{
-    stack_unwind_step(ctx, unwind_start, BPF_PROG_TYPE_RAW_TRACEPOINT, true);
-    return 0;
-}
-
-SEC("kprobe/stack_unwind_stop")
-int BPF_KPROBE(stack_unwind_stop_kp)
-{
-    stack_unwind_step(ctx, unwind_stop, BPF_PROG_TYPE_KPROBE, true);
-    return 0;
-}
-
-SEC("raw_tracepoint/stack_unwind_stop")
-int stack_unwind_stop_tp(struct bpf_raw_tracepoint_args *ctx)
-{
-    stack_unwind_step(ctx, unwind_stop, BPF_PROG_TYPE_RAW_TRACEPOINT, true);
-    return 0;
-}
-
-SEC("kprobe/stack_unwind_native")
-int BPF_KPROBE(stack_unwind_native_kp)
-{
-    stack_unwind_step(ctx, unwind_native, BPF_PROG_TYPE_KPROBE, true);
-    return 0;
-}
-
-SEC("raw_tracepoint/stack_unwind_native")
-int stack_unwind_native_tp(struct bpf_raw_tracepoint_args *ctx)
-{
-    stack_unwind_step(ctx, unwind_native, BPF_PROG_TYPE_RAW_TRACEPOINT, true);
-    return 0;
-}
-
 /**
  * This program generates a stack trace to be used for sched_process_exec events.
  * Stack traces cannot be generated during sched_process_exec, because at that point of the
@@ -7334,9 +7301,9 @@ int BPF_KPROBE(generate_exec_stack_trace)
     if (!reset_event(p.event, STACK_TRACE))
         return 0;
 
-    // Generate the stack trace. This stack unwind code is responsible for
-    // detecting that the event should not be submitted and should be saved instead.
+    // Generate the stack trace
     generate_stack_trace(&p);
+    save_stack_trace_event(p.event);
 
     return 0;
 }

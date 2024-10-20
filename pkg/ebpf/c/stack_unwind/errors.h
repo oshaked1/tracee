@@ -37,6 +37,9 @@ typedef enum ErrorCode {
 
     // Unwinder disabled
     ERR_UNWINDER_DISABLED = 10,
+
+    // Missing bpf_iter_num helpers
+    ERR_BPF_ITER_NUM_MISSING = 11,
     
     // The 1000-1999 range is reserved for kernel stack errors (only used in userspace)
 

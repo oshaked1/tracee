@@ -623,7 +623,7 @@ statfunc int do_submit_event(void *ctx, event_data_t *event)
     return bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, size);
 }
 
-statfunc int events_perf_submit(program_data_t *p, long ret)
+statfunc int do_events_perf_submit(program_data_t *p, long ret, bool disable_stack_trace)
 {
     p->event->context.retval = ret;
 
@@ -633,7 +633,7 @@ statfunc int events_perf_submit(program_data_t *p, long ret)
     bpf_probe_read_kernel(&p->task_info->context, sizeof(task_context_t), &p->event->context.task);
 
     // Check if we should add a stack trace.
-    if (!p->event->context.has_stack_trace && stack_trace_selected_for_event(p->event->context.eventid))
+    if (!disable_stack_trace && !p->event->context.has_stack_trace && stack_trace_selected_for_event(p->event->context.eventid))
         // If successfull, this call will not return - it will tail call into the stack unwinder program,
         // which is responsible for submitting the event with the added stack trace when it's done.
         generate_stack_trace(p);
@@ -661,6 +661,8 @@ statfunc int events_perf_submit(program_data_t *p, long ret)
 
     return perf_ret;
 }
+
+#define events_perf_submit(p, ret) do_events_perf_submit(p, ret, false)
 
 statfunc int signal_perf_submit(void *ctx, controlplane_signal_t *sig)
 {

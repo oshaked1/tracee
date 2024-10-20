@@ -42,6 +42,7 @@ const (
 	StackTraceErrOk                             StackTraceErrorType = 0
 	StackTraceErrUnknown                        StackTraceErrorType = 1
 	StackTraceErrUnwinderDisabled               StackTraceErrorType = 10
+	StackTraceErrBpfIterNumMissing              StackTraceErrorType = 11
 	StackTraceErrKernelGetStackID               StackTraceErrorType = 1001
 	StackTraceErrKernelReadStack                StackTraceErrorType = 1002
 	StackTraceErrKernelDecodeStack              StackTraceErrorType = 1003
@@ -57,6 +58,7 @@ var StackTraceErrorNames = map[StackTraceErrorType]string{
 	StackTraceErrOk:                             "ERR_OK",
 	StackTraceErrUnknown:                        "ERR_UNKNOWN",
 	StackTraceErrUnwinderDisabled:               "ERR_UNWINDER_DISABLED",
+	StackTraceErrBpfIterNumMissing:              "ERR_BPF_ITER_NUM_MISSING",
 	StackTraceErrKernelGetStackID:               "ERR_KERNEL_GET_STACK_ID",
 	StackTraceErrKernelReadStack:                "ERR_KERNEL_READ_STACK",
 	StackTraceErrKernelDecodeStack:              "ERR_KERNEL_DECODE_STACK",
@@ -72,6 +74,7 @@ var StackTraceErrorDescriptions = map[StackTraceErrorType]string{
 	StackTraceErrOk:                             "Success",
 	StackTraceErrUnknown:                        "Unknown error",
 	StackTraceErrUnwinderDisabled:               "Unwinder disabled",
+	StackTraceErrBpfIterNumMissing:              "BPF number iterator not present in this kernel",
 	StackTraceErrKernelGetStackID:               "Kernel: Unable to get stackid",
 	StackTraceErrKernelReadStack:                "Kernel: Unable to read stack from kernel stack map",
 	StackTraceErrKernelDecodeStack:              "Kernel: failed to decode stack trace",

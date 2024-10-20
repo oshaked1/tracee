@@ -253,6 +253,10 @@ func (decoder *EbpfDecoder) DecodeStackTrace(kernelStacksMap *libbpfgo.BPFMap,
 	if err = decoder.DecodeUint32(&userStackLen); err != nil {
 		return nil, err
 	}
+	// Make sure the stack length is not greater than MAX_FRAME_UNWINDS
+	if userStackLen > 128 {
+		return nil, fmt.Errorf("bad stack length %d", userStackLen)
+	}
 
 	stackTrace := &StackTraceRaw{
 		UserStackError: userStackError.GetStructure(),
