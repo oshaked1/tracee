@@ -5253,15 +5253,26 @@ int BPF_KPROBE(check_syscall_source)
         // This key already exists, no need to submit the same syscall-vma-process combination again
         return 0;
 
-    bool is_stack = vma_type == VMA_STACK;
-    bool is_heap = vma_type == VMA_HEAP;
-    bool is_anon = vma_type == VMA_ANON;
+    char *vma_type_str;
+
+    switch (vma_type) {
+        case VMA_STACK:
+            vma_type_str = "stack";
+            break;
+        case VMA_HEAP:
+            vma_type_str = "heap";
+            break;
+        case VMA_ANON:
+            vma_type_str = "anonymous";
+            break;
+        // shouldn't happen
+        default:
+            return 0;
+    }
 
     save_to_submit_buf(&p.event->args_buf, &syscall, sizeof(syscall), 0);
     save_to_submit_buf(&p.event->args_buf, &ip, sizeof(ip), 1);
-    save_to_submit_buf(&p.event->args_buf, &is_stack, sizeof(is_stack), 2);
-    save_to_submit_buf(&p.event->args_buf, &is_heap, sizeof(is_heap), 3);
-    save_to_submit_buf(&p.event->args_buf, &is_anon, sizeof(is_anon), 4);
+    save_str_to_buf(&p.event->args_buf, vma_type_str, 2);
 
     events_perf_submit(&p, 0);
 

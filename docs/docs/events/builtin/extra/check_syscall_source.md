@@ -24,9 +24,7 @@ To reduce noise in cases where code with significant syscall activity is being d
 
 * `syscall`:`int`[K] - the syscall which was invoked from an unusual location. The syscall name is parsed if the `parse-arguments` option is specified.
 * `ip`:`void *`[K] - the address from which the syscall was invoked (instruction pointer of the instruction following the syscall instruction).
-* `is_stack`:`bool`[K] - whether the syscall was invoked from the stack. Mutually exclusive with `is_heap` and `is_anon_vma`.
-* `is_heap`:`bool`[K] - whether the syscall was invoked from the heap. Mutually exclusive with `is_stack` and `is_anon_vma`.
-* `is_anon_vma`:`bool`[K] - whether the syscall was invoked from an anonymous (non-file-backed) VMA. Mutually exclusive with `is_stack` and `is_heap`.
+* `vma_type`:`char *`[K] - the type of the VMA which contains the code that triggered the syscall (one of *stack*/*heap*/*anonymous*)
 
 ## Hooks
 

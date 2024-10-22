@@ -13069,9 +13069,7 @@ var CoreEvents = map[ID]Definition{
 		params: []trace.ArgMeta{
 			{Type: "int", Name: "syscall"},
 			{Type: "void*", Name: "ip"},
-			{Type: "bool", Name: "is_stack"},
-			{Type: "bool", Name: "is_heap"},
-			{Type: "bool", Name: "is_anon_vma"},
+			{Type: "char*", Name: "vma_type"},
 		},
 	},
 	//

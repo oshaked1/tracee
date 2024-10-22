@@ -48,34 +48,26 @@ func (sig *e2eCheckSyscallSource) OnEvent(event protocol.Event) error {
 
 	switch eventObj.EventName {
 	case "check_syscall_source":
-		syscall, err := helpers.GetTraceeIntArgumentByName(eventObj, "syscall")
+		syscall, err := helpers.ArgVal[int32](eventObj.Args, "syscall")
 		if err != nil {
 			return err
 		}
-		isStack, err := helpers.ArgVal[bool](eventObj.Args, "is_stack")
-		if err != nil {
-			return err
-		}
-		isHeap, err := helpers.ArgVal[bool](eventObj.Args, "is_heap")
-		if err != nil {
-			return err
-		}
-		isAnonVma, err := helpers.ArgVal[bool](eventObj.Args, "is_anon_vma")
+		vma_type, err := helpers.ArgVal[string](eventObj.Args, "vma_type")
 		if err != nil {
 			return err
 		}
 
 		// check expected values from test for detection
 
-		if syscall != int(events.Exit) {
+		if syscall != int32(events.Exit) {
 			return nil
 		}
 
-		if isStack {
+		if vma_type == "stack" {
 			sig.foundStack = true
-		} else if isHeap {
+		} else if vma_type == "heap" {
 			sig.foundHeap = true
-		} else if isAnonVma {
+		} else if vma_type == "anonymous" {
 			sig.foundAnonVma = true
 		} else {
 			return nil
