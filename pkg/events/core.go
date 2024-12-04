@@ -148,6 +148,7 @@ const (
 	HiddenKernelModule
 	FtraceHook
 	TraceeInfo
+	SystemInfo
 	MaxUserSpace
 )
 
@@ -13074,6 +13075,32 @@ var CoreEvents = map[ID]Definition{
 			{Type: "unsigned long", Name: "vma_size"},
 			{Type: "unsigned long", Name: "vma_flags"},
 		},
+	},
+	SystemInfo: {
+		id:      SystemInfo,
+		id32Bit: Sys32Undefined,
+		name:    "system_info",
+		version: NewVersion(1, 0, 0),
+		sets:    []string{},
+		fields: []trace.ArgMeta{
+			{Type: "string", Name: "host_id"},
+			{Type: "string", Name: "distro"},
+			{Type: "string", Name: "distro_version"},
+			{Type: "string", Name: "kernel_version"},
+			{Type: "string", Name: "arch"},
+			{Type: "uint64", Name: "total_mem"},
+			{Type: "uint32", Name: "num_cpus"},
+			{Type: "map[string]string", Name: "kernel_config"},
+			{Type: "bool", Name: "has_btf"},
+			{Type: "string", Name: "lockdown_mode"},
+			{Type: "bool", Name: "ftrace_enabled"},
+			{Type: "string", Name: "boot_command_line"},
+			{Type: "map[string][]uint64", Name: "cpu_flags"},
+			{Type: "[]string", Name: "container_runtimes"},
+			{Type: "bool", Name: "is_kubernetes_node"},
+			{Type: "string", Name: "cloud_provider"},
+		},
+		dependencies: Dependencies{},
 	},
 	//
 	// Begin of Signal Events (Control Plane)
