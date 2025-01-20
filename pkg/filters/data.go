@@ -174,7 +174,7 @@ func (f *DataFilter) Parse(id events.ID, fieldName string, operatorAndValues str
 		case events.SysEnter,
 			events.SysExit,
 			events.SuspiciousSyscallSource,
-			events.StackPivot:
+			events.UserStackPivot:
 			if fieldName == "syscall" { // handle either syscall name or syscall id
 				_, err := strconv.Atoi(val)
 				if err != nil {

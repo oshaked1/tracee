@@ -1,8 +1,8 @@
-# stack_pivot
+# user_stack_pivot
 
 ## Intro
 
-stack_pivot - An event reporting a syscall that was invoked while the user's stack pointer doesn't point to the stack.
+user_stack_pivot - An event reporting a syscall that was invoked while the user's stack pointer doesn't point to the stack.
 
 ## Description
 
@@ -16,7 +16,7 @@ This event attempts to detect the usage of this technique by checking the stack 
 
 This event relies on an event parameter to specify which syscalls should be monitored, to reduce overhead. An example command line usage of this event:
 
-`tracee --events stack_pivot.args.syscall=open,openat`.
+`tracee --events user_stack_pivot.args.syscall=open,openat`.
 
 ## Arguments
 

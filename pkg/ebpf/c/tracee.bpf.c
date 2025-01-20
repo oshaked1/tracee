@@ -637,7 +637,7 @@ int tracepoint__sched__sched_process_fork(struct bpf_raw_tracepoint_args *ctx)
 
     // Track thread stack if needed
     if (event_is_selected(SUSPICIOUS_SYSCALL_SOURCE, p.event->context.policies_version) ||
-        event_is_selected(STACK_PIVOT, p.event->context.policies_version))
+        event_is_selected(USER_STACK_PIVOT, p.event->context.policies_version))
         update_thread_stack(ctx, task, child);
 
     // Update the proc_info_map with the new process's info (from parent)
@@ -5291,7 +5291,7 @@ struct {
     __uint(max_entries, MAX_EVENT_ID);
     __type(key, u32);
     __type(value, u32);
-} stack_pivot_syscalls SEC(".maps");
+} user_stack_pivot_syscalls SEC(".maps");
 
 statfunc void check_suspicious_syscall_source(void *ctx, struct pt_regs *regs, u32 syscall)
 {
@@ -5345,11 +5345,11 @@ statfunc void check_suspicious_syscall_source(void *ctx, struct pt_regs *regs, u
     events_perf_submit(&p, 0);
 }
 
-statfunc void check_stack_pivot(void *ctx, struct pt_regs *regs, u32 syscall)
+statfunc void check_user_stack_pivot(void *ctx, struct pt_regs *regs, u32 syscall)
 {
     program_data_t p = {};
 
-    if (!init_program_data(&p, ctx, STACK_PIVOT))
+    if (!init_program_data(&p, ctx, USER_STACK_PIVOT))
         return;
 
     if (!evaluate_scope_filters(&p))
@@ -5411,8 +5411,8 @@ int BPF_KPROBE(syscall_checker)
     if (bpf_map_lookup_elem(&suspicious_syscall_source_syscalls, &syscall) != NULL)
         check_suspicious_syscall_source(ctx, regs, syscall);
 
-    if (bpf_map_lookup_elem(&stack_pivot_syscalls, &syscall) != NULL)
-        check_stack_pivot(ctx, regs, syscall);
+    if (bpf_map_lookup_elem(&user_stack_pivot_syscalls, &syscall) != NULL)
+        check_user_stack_pivot(ctx, regs, syscall);
 
     return 0;
 }

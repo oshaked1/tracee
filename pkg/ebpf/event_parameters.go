@@ -17,7 +17,7 @@ type eventParameterHandler func(t *Tracee, eventParams []map[string]filters.Filt
 
 var eventParameterHandlers = map[events.ID]eventParameterHandler{
 	events.SuspiciousSyscallSource: prepareSuspiciousSyscallSource,
-	events.StackPivot:              prepareStackPivot,
+	events.UserStackPivot:          prepareUserStackPivot,
 }
 
 // handleEventParameters performs initialization actions according to event parameters,
@@ -153,6 +153,6 @@ func prepareSuspiciousSyscallSource(t *Tracee, eventParams []map[string]filters.
 	return registerSyscallChecker(t, eventParams, "syscall", "suspicious_syscall_source_syscalls")
 }
 
-func prepareStackPivot(t *Tracee, eventParams []map[string]filters.Filter[*filters.StringFilter]) error {
-	return registerSyscallChecker(t, eventParams, "syscall", "stack_pivot_syscalls")
+func prepareUserStackPivot(t *Tracee, eventParams []map[string]filters.Filter[*filters.StringFilter]) error {
+	return registerSyscallChecker(t, eventParams, "syscall", "user_stack_pivot_syscalls")
 }

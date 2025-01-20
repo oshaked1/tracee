@@ -9,42 +9,42 @@ import (
 	"github.com/aquasecurity/tracee/types/trace"
 )
 
-type e2eStackPivot struct {
+type e2eUserStackPivot struct {
 	cb            detect.SignatureHandler
 	falsePositive bool
 }
 
-func (sig *e2eStackPivot) Init(ctx detect.SignatureContext) error {
+func (sig *e2eUserStackPivot) Init(ctx detect.SignatureContext) error {
 	sig.cb = ctx.Callback
 
 	return nil
 }
 
-func (sig *e2eStackPivot) GetMetadata() (detect.SignatureMetadata, error) {
+func (sig *e2eUserStackPivot) GetMetadata() (detect.SignatureMetadata, error) {
 	return detect.SignatureMetadata{
-		ID:          "STACK_PIVOT",
-		EventName:   "STACK_PIVOT",
+		ID:          "USER_STACK_PIVOT",
+		EventName:   "USER_STACK_PIVOT",
 		Version:     "0.1.0",
-		Name:        "Stack Pivot Test",
-		Description: "Instrumentation events E2E Tests: Stack Pivot",
+		Name:        "User Stack Pivot Test",
+		Description: "Instrumentation events E2E Tests: User Stack Pivot",
 		Tags:        []string{"e2e", "instrumentation"},
 	}, nil
 }
 
-func (sig *e2eStackPivot) GetSelectedEvents() ([]detect.SignatureEventSelector, error) {
+func (sig *e2eUserStackPivot) GetSelectedEvents() ([]detect.SignatureEventSelector, error) {
 	return []detect.SignatureEventSelector{
-		{Source: "tracee", Name: "stack_pivot"},
+		{Source: "tracee", Name: "user_stack_pivot"},
 	}, nil
 }
 
-func (sig *e2eStackPivot) OnEvent(event protocol.Event) error {
+func (sig *e2eUserStackPivot) OnEvent(event protocol.Event) error {
 	eventObj, ok := event.Payload.(trace.Event)
 	if !ok {
 		return fmt.Errorf("failed to cast event's payload")
 	}
 
 	switch eventObj.EventName {
-	case "stack_pivot":
+	case "user_stack_pivot":
 		syscall, err := helpers.ArgVal[string](eventObj.Args, "syscall")
 		if err != nil {
 			return err
@@ -75,8 +75,8 @@ func (sig *e2eStackPivot) OnEvent(event protocol.Event) error {
 	return nil
 }
 
-func (sig *e2eStackPivot) OnSignal(s detect.Signal) error {
+func (sig *e2eUserStackPivot) OnSignal(s detect.Signal) error {
 	return nil
 }
 
-func (sig *e2eStackPivot) Close() {}
+func (sig *e2eUserStackPivot) Close() {}

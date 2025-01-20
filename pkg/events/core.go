@@ -107,7 +107,7 @@ const (
 	SecurityPathNotify
 	SetFsPwd
 	SuspiciousSyscallSource
-	StackPivot
+	UserStackPivot
 	HiddenKernelModuleSeeker
 	ModuleLoad
 	ModuleFree
@@ -13083,10 +13083,10 @@ var CoreEvents = map[ID]Definition{
 			{Type: "unsigned long", Name: "vma_flags"},
 		},
 	},
-	StackPivot: {
-		id:      StackPivot,
+	UserStackPivot: {
+		id:      UserStackPivot,
 		id32Bit: Sys32Undefined,
-		name:    "stack_pivot",
+		name:    "user_stack_pivot",
 		dependencies: Dependencies{
 			probes: []Probe{
 				{handle: probes.SchedProcessFork, required: false}, // for thread stack tracking
