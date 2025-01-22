@@ -5417,6 +5417,77 @@ int BPF_KPROBE(syscall_checker)
     return 0;
 }
 
+statfunc bool check_kernel_rop_func_addr_on_stack(struct pt_regs *regs)
+{
+    u64 first_stack_val;
+    if (bpf_probe_read_kernel(&first_stack_val, 8, (void *)(regs->sp - 8)) != 0)
+        return false;
+    u64 val_2;
+    if (bpf_probe_read_kernel(&val_2, 8, (void *)(regs->sp)) != 0)
+        return false;
+    u64 val_3;
+    if (bpf_probe_read_kernel(&val_3, 8, (void *)(regs->sp+8)) != 0)
+        return false;
+    u64 val_4;
+    if (bpf_probe_read_kernel(&val_4, 8, (void *)(regs->sp+16)) != 0)
+        return false;
+    u64 val_5;
+    if (bpf_probe_read_kernel(&val_5, 8, (void *)(regs->sp+24)) != 0)
+        return false;
+    
+    u64 func_addr = regs->ip - 1; // kprobe IP is one byte after the function start
+
+    /*char comm[16];
+    bpf_get_current_comm(comm, 16);
+    if (has_prefix("python3", comm, 7)) {
+        bpf_printk("func_addr: 0x%llx, fist_stack_val: 0x%llx, val_2: 0x%llx", func_addr, first_stack_val, val_2);
+        bpf_printk("val_3: 0x%llx, val_4: 0x%llx, val_5: 0x%llx", val_3, val_4, val_5);
+    }*/
+    bpf_printk("func_addr: 0x%llx, fist_stack_val: 0x%llx, val_2: 0x%llx", func_addr, first_stack_val, val_2);
+    //bpf_printk("val_3: 0x%llx, val_4: 0x%llx, val_5: 0x%llx", val_3, val_4, val_5);
+    
+    // Schrödinger's ROP
+    // =================
+    // When a ROP exploit returns into a function, the RSP is adjusted such that now,
+    // the function address that was returned to, is the first value on the stack.
+    // However, by tracing said function, we influence that stack value, becuase the
+    // kprobe mechanism single-steps the instruction it overwrote and then returns to
+    // the following instruction, which means it writes its own return value to that stack location.
+    // Most of the time the overwritten instruction is `call __fentry__` which is 5 bytes,
+    // but it may be something else, so we account for the largest possible instruction.
+#if defined(bpf_target_x86)
+#define X86_MAX_INSN_SIZE 16
+    return (first_stack_val - func_addr) <= X86_MAX_INSN_SIZE;
+#else
+#error Unsupported architecture
+#endif
+}
+
+SEC("kretprobe/rop_checker")
+int BPF_KPROBE(rop_checker)
+{
+    program_data_t p = {};
+    if (!init_program_data(&p, ctx, KERNEL_ROP))
+        return 0;
+
+    if (!evaluate_scope_filters(&p))
+        return 0;
+    
+    bool func_addr_on_stack = check_kernel_rop_func_addr_on_stack(ctx);
+
+    // No detection
+    if (!func_addr_on_stack)
+        return 0;
+    
+    u64 func_addr = ctx->ip - 1; // kprobe IP is one byte after the function start
+    
+    save_to_submit_buf(&p.event->args_buf, &func_addr, sizeof(func_addr), 0);
+    save_to_submit_buf(&p.event->args_buf, &func_addr_on_stack, sizeof(func_addr_on_stack), 2);
+    events_perf_submit(&p, 0);
+
+    return 0;
+}
+
 // clang-format off
 
 // Network Packets (works from ~5.2 and beyond)

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+	"kernel.org/pub/linux/libs/security/libcap/cap"
 
 	"github.com/aquasecurity/tracee/pkg/capabilities"
 	"github.com/aquasecurity/tracee/pkg/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/aquasecurity/tracee/pkg/logger"
 	"github.com/aquasecurity/tracee/pkg/time"
 	"github.com/aquasecurity/tracee/pkg/utils"
+	"github.com/aquasecurity/tracee/pkg/utils/environment"
 	"github.com/aquasecurity/tracee/types/trace"
 )
 
@@ -481,6 +483,35 @@ func (t *Tracee) removeIrrelevantContext(event *trace.Event) error {
 	// but that context is meaningless. Remove it.
 	if event.ProcessID == os.Getpid() {
 		return t.removeContext(event)
+	}
+
+	return nil
+}
+
+func (t *Tracee) processKernelROP(event *trace.Event) error {
+	// Find the name of the function that the ROP was detected on
+	addr, err := parse.ArgVal[uint64](event.Args, "func_addr")
+	if err != nil {
+		return errfmt.Errorf("failed to get function address: %v", err)
+	}
+	var funcSyms []environment.KernelSymbol
+	err = capabilities.GetInstance().Specific(
+		func() error {
+			funcSyms, err = t.kernelSymbols.GetSymbolByAddr(addr)
+			if err != nil {
+				return errfmt.Errorf("could not find function name, address: 0x%x, error: %v", addr, err)
+			}
+			return nil
+		},
+		cap.SYSLOG,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Set function name argument
+	if err := events.SetArgValue(event, "func_name", funcSyms[0].Name); err != nil {
+		return errfmt.Errorf("failed to set function name: %v", err)
 	}
 
 	return nil

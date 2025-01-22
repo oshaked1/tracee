@@ -18,6 +18,7 @@ type eventParameterHandler func(t *Tracee, eventParams []map[string]filters.Filt
 var eventParameterHandlers = map[events.ID]eventParameterHandler{
 	events.SuspiciousSyscallSource: prepareSuspiciousSyscallSource,
 	events.UserStackPivot:          prepareUserStackPivot,
+	events.KernelROP:               prepareKernelROP,
 }
 
 // handleEventParameters performs initialization actions according to event parameters,
@@ -155,4 +156,42 @@ func prepareSuspiciousSyscallSource(t *Tracee, eventParams []map[string]filters.
 
 func prepareUserStackPivot(t *Tracee, eventParams []map[string]filters.Filter[*filters.StringFilter]) error {
 	return registerSyscallChecker(t, eventParams, "syscall", "user_stack_pivot_syscalls")
+}
+
+func prepareKernelROP(t *Tracee, eventParams []map[string]filters.Filter[*filters.StringFilter]) error {
+	probeGroup := probes.NewProbeGroup(t.bpfModule, map[probes.Handle]probes.Probe{})
+	t.extraProbes["rop_checkers"] = probeGroup
+
+	// Get list of functions to check
+	funcsSet := map[string]struct{}{}
+	for _, policyParams := range eventParams {
+		functionsParam, ok := policyParams["func_name"].(*filters.StringFilter)
+		if !ok {
+			return errfmt.Errorf("invalid argument name 'func_name'")
+		}
+
+		for _, entry := range functionsParam.Equal() {
+			funcsSet[entry] = struct{}{}
+		}
+	}
+	funcs := []string{}
+	for funcName, _ := range funcsSet {
+		funcs = append(funcs, funcName)
+	}
+
+	// Register and attach a kprobe for all selected functions
+	for idx, funcName := range funcs {
+		handle := probes.Handle(idx)
+		probe := probes.NewTraceProbe(probes.KretProbe, funcName, "rop_checker")
+		if err := probeGroup.AddProbe(handle, probe); err != nil {
+			return errfmt.WrapError(err)
+		}
+		if err := probeGroup.Attach(handle, t.kernelSymbols); err != nil {
+			// Report attachment errors but don't fail, because it may be a function that doesn't exist on this system
+			logger.Warnw("Failed to attach rop checker kprobe", "function", funcName, "error", err)
+			continue
+		}
+	}
+
+	return nil
 }

@@ -116,6 +116,7 @@ const (
 	SecurityTaskSetrlimit
 	SecuritySettime64
 	ChmodCommon
+	KernelROP
 	MaxCommonID
 )
 
@@ -13101,6 +13102,17 @@ var CoreEvents = map[ID]Definition{
 			{Type: "void*", Name: "vma_start"},
 			{Type: "unsigned long", Name: "vma_size"},
 			{Type: "unsigned long", Name: "vma_flags"},
+		},
+	},
+	KernelROP: {
+		id:      KernelROP,
+		id32Bit: Sys32Undefined,
+		name:    "kernel_rop",
+		sets:    []string{},
+		fields: []trace.ArgMeta{
+			{Type: "u64", Name: "func_addr"},
+			{Type: "string", Name: "func_name"}, // populated in user space
+			{Type: "bool", Name: "func_addr_on_stack"},
 		},
 	},
 	//
