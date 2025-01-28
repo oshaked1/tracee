@@ -116,6 +116,8 @@ const (
 	SecurityTaskSetrlimit
 	SecuritySettime64
 	ChmodCommon
+	OpenFileOutsideNS
+	OpenFileOutsideMount
 	MaxCommonID
 )
 
@@ -13101,6 +13103,43 @@ var CoreEvents = map[ID]Definition{
 			{Type: "void*", Name: "vma_start"},
 			{Type: "unsigned long", Name: "vma_size"},
 			{Type: "unsigned long", Name: "vma_flags"},
+		},
+	},
+	OpenFileOutsideNS: {
+		id:      OpenFileOutsideNS,
+		id32Bit: Sys32Undefined,
+		name:    "open_file_outside_ns",
+		version: NewVersion(1, 0, 0),
+		dependencies: Dependencies{
+			probes: []Probe{
+				{handle: probes.SecurityFileOpen, required: true},
+			},
+		},
+		sets: []string{"lsm_hooks", "fs", "fs_file_ops", "security_alert"},
+		fields: []trace.ArgMeta{
+			{Type: "const char*", Name: "pathname"},
+			{Type: "int", Name: "flags"},
+			{Type: "const char*", Name: "syscall_pathname"},
+			{Type: "u32", Name: "mount_ns"},
+		},
+	},
+	OpenFileOutsideMount: {
+		id:      OpenFileOutsideMount,
+		id32Bit: Sys32Undefined,
+		name:    "open_file_outside_mount",
+		version: NewVersion(1, 0, 0),
+		dependencies: Dependencies{
+			probes: []Probe{
+				{handle: probes.SecurityFileOpen, required: true},
+			},
+		},
+		sets: []string{"lsm_hooks", "fs", "fs_file_ops", "security_alert"},
+		fields: []trace.ArgMeta{
+			{Type: "const char*", Name: "pathname"},
+			{Type: "int", Name: "flags"},
+			{Type: "const char*", Name: "syscall_pathname"},
+			{Type: "const char*", Name: "mount_src"},
+			{Type: "const char*", Name: "mount_dst"},
 		},
 	},
 	//
